@@ -5052,7 +5052,7 @@ body.is-dark-mode .btn-carrier-walmart {
                             <label class="lp-drive-sound-field">
                                 <span>Archivo nuevo</span>
                                 <div class="lp-drive-sound-control">
-                                    <select class="lp-drive-sound-select" id="drive-sound-arrival">
+                                    <select class="lp-drive-sound-select" id="drive-sound-arrival" name="driveSoundArrival">
                                         <option value="clearBell">Campana clara</option>
                                         <option value="softDouble">Doble suave</option>
                                         <option value="brightPing">Ping brillante</option>
@@ -5079,7 +5079,7 @@ body.is-dark-mode .btn-carrier-walmart {
                             <label class="lp-drive-sound-field">
                                 <span>Aviso 10 min</span>
                                 <div class="lp-drive-sound-control">
-                                    <select class="lp-drive-sound-select" id="drive-sound-warning">
+                                    <select class="lp-drive-sound-select" id="drive-sound-warning" name="driveSoundWarning">
                                         <option value="clearBell">Campana clara</option>
                                         <option value="softDouble">Doble suave</option>
                                         <option value="brightPing">Ping brillante</option>
@@ -5106,7 +5106,7 @@ body.is-dark-mode .btn-carrier-walmart {
                             <label class="lp-drive-sound-field">
                                 <span>Crítico 5 min</span>
                                 <div class="lp-drive-sound-control">
-                                    <select class="lp-drive-sound-select" id="drive-sound-critical">
+                                    <select class="lp-drive-sound-select" id="drive-sound-critical" name="driveSoundCritical">
                                         <option value="clearBell">Campana clara</option>
                                         <option value="softDouble">Doble suave</option>
                                         <option value="brightPing">Ping brillante</option>
@@ -5146,7 +5146,7 @@ body.is-dark-mode .btn-carrier-walmart {
                 <!-- PICKER + TEXTO CARD -->
                 <div class="lp-picker-card is-collapsed">
                     <div id="dropzone" style="display:none;">
-                        <input type="file" id="fileInput" accept=".txt" multiple>
+                        <input type="file" id="fileInput" name="labelFiles" accept=".txt" multiple>
                     </div>
 
                     <div class="lp-collapsible-head">
@@ -5159,7 +5159,7 @@ body.is-dark-mode .btn-carrier-walmart {
                     <div class="input-group">
                         <div class="form-control">
                             <div class="picker-select-row">
-                                <select id="picker" required>
+                                <select id="picker" name="picker" required>
                                     <option value="" disabled selected>Seleccione una opcion...</option>
                                     <option value="bestay">bestay</option>
                                     <option value="eagudelo">eagudelo</option>
@@ -5180,7 +5180,7 @@ body.is-dark-mode .btn-carrier-walmart {
                                     <span class="picker-manager-count" id="pickerManagerCount">6</span>
                                 </div>
                                 <div class="picker-manager-top">
-                                    <input id="newPickerInput" type="text" placeholder="Escribe un usuario">
+                                    <input id="newPickerInput" name="newPicker" type="text" placeholder="Escribe un usuario">
                                     <button class="btn picker-add-btn" id="addPickerBtn" type="button">Agregar</button>
                                 </div>
                                 <div class="picker-manager-note">Debe quedar al menos un usuario disponible.</div>
@@ -5203,7 +5203,7 @@ body.is-dark-mode .btn-carrier-walmart {
                             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                         </label>
                     </div>
-                    <textarea id="textInput" placeholder="Pega aqui el contenido de la etiqueta..."></textarea>
+                    <textarea id="textInput" name="labelText" placeholder="Pega aqui el contenido de la etiqueta..."></textarea>
                     <p id="storageSummary" style="display:none!important;">El historial funciona entre las 07:00 y las 18:00.</p>
 
                     <div class="lp-text-actions">
@@ -5371,7 +5371,7 @@ body.is-dark-mode .btn-carrier-walmart {
 
                     <div class="results-toolbar">
                         <div class="results-search-group">
-                            <input class="search-input" id="searchInput" type="text" placeholder="Buscar pedido en carga actual o historial...">
+                            <input class="search-input" id="searchInput" name="searchOrder" type="text" placeholder="Buscar pedido en carga actual o historial...">
                             <div class="results-history-actions">
                                 <button class="results-history-btn" id="showStoredBtn" type="button" title="Mostrar todo">Mostrar todo</button>
                                 <button class="results-history-btn" id="clearStoredBtn" type="button" title="Limpiar historial">Limpiar</button>
@@ -5401,7 +5401,7 @@ body.is-dark-mode .btn-carrier-walmart {
                                     <th>Revision</th>
                                     <th>Guardado</th>
                                     <th>
-                                        <select class="table-status-filter" id="mainStatusFilter" aria-label="Filtrar estado de pedidos">
+                                        <select class="table-status-filter" id="mainStatusFilter" name="mainStatusFilter" aria-label="Filtrar estado de pedidos">
                                             <option value="">Estado</option>
                                         </select>
                                     </th>
@@ -5448,7 +5448,7 @@ body.is-dark-mode .btn-carrier-walmart {
                         </button>
                         <label class="zebra-printer-control" for="zebraPrinterSelect">
                             <span>Zebra</span>
-                            <select id="zebraPrinterSelect" title="Seleccionar impresora Zebra">
+                            <select id="zebraPrinterSelect" name="zebraPrinter" title="Seleccionar impresora Zebra">
                                 <option value="default">Predeterminada</option>
                                 <option value="zebra02">ZEBRA 02</option>
                                 <option value="zebra05">ZEBRA 05</option>
@@ -5505,7 +5505,7 @@ body.is-dark-mode .btn-carrier-walmart {
                                 Cargar Excel
                             </button>
                             <div class="order-lookup-file" id="orderLookupFileName" aria-live="polite">No hay archivo Excel cargado.</div>
-                            <input type="file" id="orderLookupFileInput" accept=".xlsx">
+                            <input type="file" id="orderLookupFileInput" name="orderLookupExcel" accept=".xlsx">
                         </div>
                     </div>
 
@@ -5517,7 +5517,7 @@ body.is-dark-mode .btn-carrier-walmart {
                             <span>Pedido</span>
                             <div class="ol-search-wrapper">
                                 <svg class="ol-search-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                                <input id="orderLookupInput" class="order-lookup-search-input" type="text" placeholder="Buscar por número de pedido">
+                                <input id="orderLookupInput" name="orderLookupQuery" class="order-lookup-search-input" type="text" placeholder="Buscar por número de pedido">
                             </div>
                         </label>
 
@@ -5525,13 +5525,13 @@ body.is-dark-mode .btn-carrier-walmart {
                         <div class="ol-filters-row">
                             <label class="order-lookup-filter-field" for="orderLookupStateFilter">
                                 <span>Estado</span>
-                                <select id="orderLookupStateFilter">
+                                <select id="orderLookupStateFilter" name="orderLookupStateFilter">
                                     <option value="">Todos los estados</option>
                                 </select>
                             </label>
                             <label class="order-lookup-filter-field" for="orderLookupRouteFilter">
                                 <span>Ruta</span>
-                                <select id="orderLookupRouteFilter">
+                                <select id="orderLookupRouteFilter" name="orderLookupRouteFilter">
                                     <option value="">Todas las rutas</option>
                                 </select>
                             </label>
@@ -9877,8 +9877,9 @@ body.is-dark-mode .app-message-close:hover {
                     App.state.extractedRows.forEach(row => {
                         const tr = document.createElement('tr');
                         tr.dataset.rowId = row.viewId;
+                        const selectorId = `row-selector-${App.helpers.escapeHtml(row.viewId)}`;
                         tr.innerHTML = `
-                            <td><input class="row-selector" type="checkbox" aria-label="Seleccionar ${App.helpers.escapeHtml(row.numero)}"></td>
+                            <td><input class="row-selector" id="${selectorId}" name="rowSelector" type="checkbox" aria-label="Seleccionar ${App.helpers.escapeHtml(row.numero)}"></td>
                             <td>${App.helpers.escapeHtml(row.proceso)}</td>
                             <td><strong>${App.helpers.escapeHtml(row.numero)}</strong></td>
                             <td>${App.helpers.escapeHtml(row.picker)}</td>
@@ -11531,7 +11532,7 @@ function _showApiKeyInput() {
     row.id        = 'drive-apikey-row';
     row.className = 'ds-apikey-row';
     row.innerHTML = `
-        <input id="drive-apikey-input" type="password" class="ds-apikey-input"
+        <input id="drive-apikey-input" name="driveApiKey" type="password" class="ds-apikey-input"
                placeholder="Google API Key…" autocomplete="off" spellcheck="false" />
         <button id="drive-apikey-save" class="ds-btn ds-btn--save">Guardar</button>`;
 
@@ -11614,7 +11615,7 @@ function _renderPending() {
                 <span class="ds-tag ds-tag--bulk">${item.bulkCount} bulto${item.bulkCount !== 1 ? 's' : ''}</span>
             </div>
             <div class="ds-pending-actions">
-                <select class="ds-pending-select">${optHtml}</select>
+                <select class="ds-pending-select" id="drive-pending-picker-${_esc(item.id)}" name="drivePendingPicker">${optHtml}</select>
                 <button class="ds-btn ds-btn--process">Procesar</button>
                 <button class="ds-btn ds-btn--dismiss">✕</button>
             </div>`;
@@ -11763,7 +11764,7 @@ function _renderExistingPanel() {
                 <div class="ds-ep-file-actions">
                     ${isDone
                         ? `<span class="ds-ep-done-badge">✅ Procesado</span>`
-                        : `<select class="ds-ep-select" data-file-id="${_esc(f.id)}">${optHtml}</select>
+                        : `<select class="ds-ep-select" id="drive-existing-picker-${_esc(f.id)}" name="driveExistingPicker" data-file-id="${_esc(f.id)}">${optHtml}</select>
                            <button class="ds-btn ds-btn--process ds-ep-btn-process"
                                data-file-id="${_esc(f.id)}">Procesar</button>`
                     }
@@ -11941,7 +11942,7 @@ function _ensureCarrierPrintModal() {
             <div class="carrier-print-body">
                 <aside class="carrier-print-side">
                     <label for="carrierPrintSelect">Archivo PDF</label>
-                    <select id="carrierPrintSelect"></select>
+                    <select id="carrierPrintSelect" name="carrierPrintSelect"></select>
                     <div class="carrier-print-file-list" id="carrierPrintFileList"></div>
                 </aside>
                 <div class="carrier-print-viewer">
