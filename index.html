@@ -4445,16 +4445,18 @@ header p {
 .results-actions {
   order: 5 !important;
   display: grid !important;
-  grid-template-columns: minmax(180px, 1fr) minmax(190px, 1fr) minmax(220px, 1.4fr) !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
   gap: 9px !important;
   align-items: stretch !important;
+  height: 40px !important;
 }
 
 .zebra-printer-control {
-  height: 38px !important;
-  min-height: 38px !important;
+  width: 100% !important;
+  height: 40px !important;
+  min-height: 40px !important;
   display: grid !important;
-  grid-template-columns: 46px minmax(0, 1fr) !important;
+  grid-template-columns: 54px minmax(0, 1fr) !important;
   align-items: center !important;
   gap: 7px !important;
   padding: 0 8px 0 12px !important;
@@ -4471,7 +4473,7 @@ header p {
 .zebra-printer-control select {
   width: 100% !important;
   min-width: 0 !important;
-  height: 28px !important;
+  height: 30px !important;
   border: 1px solid rgba(15,23,42,0.08) !important;
   border-radius: 6px !important;
   outline: none !important;
@@ -4484,8 +4486,9 @@ header p {
 }
 
 .results-actions .btn {
-  height: 38px !important;
-  min-height: 38px !important;
+  width: 100% !important;
+  height: 40px !important;
+  min-height: 40px !important;
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
