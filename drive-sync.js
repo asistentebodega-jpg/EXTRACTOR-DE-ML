@@ -1,4340 +1,2910 @@
-﻿(() => {
-    function bootstrap() {
-        const collectDom = () => ({
-            dropzone: document.getElementById('dropzone'),
-            fileInput: document.getElementById('fileInput'),
-            pickerInput: document.getElementById('picker'),
-            manageUsersBtn: document.getElementById('manageUsersBtn'),
-            pickerMeta: document.getElementById('pickerMeta'),
-            pickerManager: document.getElementById('pickerManager'),
-            pickerManagerCount: document.getElementById('pickerManagerCount'),
-            newPickerInput: document.getElementById('newPickerInput'),
-            addPickerBtn: document.getElementById('addPickerBtn'),
-            pickerList: document.getElementById('pickerList'),
-            pickerListTotal: document.getElementById('pickerListTotal'),
-            resultsPanel: document.getElementById('results'),
-            tableBody: document.querySelector('#dataTable tbody'),
-            flexStatBtn: document.getElementById('flexStatBtn'),
-            colectaStatBtn: document.getElementById('colectaStatBtn'),
-            totalStatBtn: document.getElementById('totalStatBtn'),
-            countFlex: document.getElementById('countFlex'),
-            countColecta: document.getElementById('countColecta'),
-            countTotal: document.getElementById('countTotal'),
-            downloadBtn: document.getElementById('downloadBtn'),
-            clearBtn: document.getElementById('clearBtn'),
-            textInput: document.getElementById('textInput'),
-            processTextBtn: document.getElementById('processTextBtn'),
-            printZebraBtn: document.getElementById('printZebraBtn'),
-            zebraPrinterSelect: document.getElementById('zebraPrinterSelect'),
-            searchInput: document.getElementById('searchInput'),
-            selectedInfo: document.getElementById('selectedInfo'),
-            resultsMeta: document.getElementById('resultsMeta'),
-            notificationBellBtn: document.getElementById('notificationBellBtn'),
-            themeToggleBtn: document.getElementById('themeToggleBtn'),
-            notificationBadge: document.getElementById('notificationBadge'),
-            notificationPanel: document.getElementById('notificationPanel'),
-            notificationPanelCloseBtn: document.getElementById('notificationPanelCloseBtn'),
-            notificationPanelRefreshBtn: document.getElementById('notificationPanelRefreshBtn'),
-            notificationDriveBtn: document.getElementById('notificationDriveBtn'),
-            notificationList: document.getElementById('notificationList'),
-            notificationSummary: document.getElementById('notificationSummary'),
-            appSystemStatus: document.getElementById('appSystemStatus'),
-            storageStatus: document.getElementById('storageStatus'),
-            outsideHoursToggleBtn: document.getElementById('outsideHoursToggleBtn'),
-            storageSummary: document.getElementById('storageSummary'),
-            storageNote: document.getElementById('storageNote'),
-            historyList: document.getElementById('historyList'),
-            showStoredBtn: document.getElementById('showStoredBtn'),
-            clearStoredBtn: document.getElementById('clearStoredBtn'),
-            cancelOrderBtn: document.getElementById('cancelOrderBtn'),
-            savePortableBtn: document.getElementById('savePortableBtn'),
-            messageStack: document.getElementById('messageStack'),
-            orderLookupFileInput: document.getElementById('orderLookupFileInput'),
-            orderLookupLoadBtn: document.getElementById('orderLookupLoadBtn'),
-            orderLookupFileName: document.getElementById('orderLookupFileName'),
-            orderLookupInput: document.getElementById('orderLookupInput'),
-            orderLookupSearchBtn: document.getElementById('orderLookupSearchBtn'),
-            orderLookupStateFilter: document.getElementById('orderLookupStateFilter'),
-            orderLookupRouteFilter: document.getElementById('orderLookupRouteFilter'),
-            orderLookupClearFiltersBtn: document.getElementById('orderLookupClearFiltersBtn'),
-            mainStatusFilter: document.getElementById('mainStatusFilter'),
-            orderLookupSummary: document.getElementById('orderLookupSummary'),
-            orderLookupTableWrap: document.getElementById('orderLookupTableWrap'),
-            orderLookupTableHead: document.getElementById('orderLookupTableHead'),
-            orderLookupTableBody: document.getElementById('orderLookupTableBody'),
-            bluexpressLabelsBtn: document.getElementById('bluexpressLabelsBtn'),
-            walmartLabelsBtn: document.getElementById('walmartLabelsBtn'),
-            pasteTitle: document.querySelector('.input-methods .method-card:last-child h3')
-        });
+/**
+ * drive-sync.js — versión final
+ *
+ * Problemas corregidos:
+ *  1. Sin window.prompt()       → API Key se ingresa en input inline del panel
+ *  2. Sin inline styles         → todo el render usa clases CSS (.ds-*)
+ *  3. Paginación completa       → _listFilesAll() sigue nextPageToken
+ *  4. Sin onclick en strings    → event delegation con data-* attributes
+ *  5. Recursión paralela        → Promise.all en subcarpetas
+ *  6. _state protegido          → Proxy con validación de tipos y valores
+ *  7. _gapiReady encapsulado    → módulo _gapi con getter/setter
+ *  8. API Key ofuscada          → _keyStore con btoa encoding (base64)
+ *
+ * Requiere: drive-sync.css (clases .ds-*) cargado en index.html
+ */
 
-        const dom = collectDom();
-        if (!dom.dropzone || !dom.fileInput || !dom.pickerInput || !dom.tableBody) {
+'use strict';
+
+// ─── Configuración ─────────────────────────────────────────────────────────────
+
+const DRIVE_CONFIG = Object.freeze({
+    CLIENT_ID:            '539650020603-dcgj1e8u6ig305qosef3p49tkc8ml551.apps.googleusercontent.com',
+    ROOT_FOLDER_ID:       '0AGCxqv4-HTgIUk9PVA',
+    MARKETPLACE_FOLDER:   'MERCADOLIBRE',
+    POLL_INTERVAL:        30_000,
+    SCOPES:               'https://www.googleapis.com/auth/drive.readonly',
+    DEFAULT_PICKER:       'kmendoza',
+    TOKEN_KEY:            'drive_token_v2',
+    MODE_KEY:             'drive_mode',
+    WAS_ACTIVE_KEY:       'drive_was_active',
+    API_KEY_KEY:          'drive_api_key',
+    SOUND_SETTINGS_KEY:   'drive_sound_settings_v1',
+    CARRIER_PRINTED_KEY:  'drive_carrier_printed_labels_v1',
+    TOKEN_REFRESH_MARGIN: 5 * 60 * 1000,
+});
+
+const _carrierPrintState = {
+    entries: [],
+    activeIndex: 0,
+    lastFocused: null,
+};
+
+const MESES = Object.freeze([
+    'ENERO','FEBRERO','MARZO','ABRIL','MAYO','JUNIO',
+    'JULIO','AGOSTO','SEPTIEMBRE','OCTUBRE','NOVIEMBRE','DICIEMBRE',
+]);
+
+const DRIVE_LABEL_SOURCES = Object.freeze({
+    mercadolibre: Object.freeze({
+        key: 'mercadolibre',
+        label: 'Mercado Libre',
+        folder: DRIVE_CONFIG.MARKETPLACE_FOLDER,
+        fileLabel: 'TXT',
+        mimeType: 'text/plain',
+        fallbackToRoot: true,
+    }),
+    bluexpress: Object.freeze({
+        key: 'bluexpress',
+        label: 'Bluexpress',
+        folder: 'BLUEXPRESS',
+        aliases: ['BLUEXPRESS'],
+        fileLabel: 'PDF',
+        mimeType: 'application/pdf',
+        fallbackToRoot: false,
+    }),
+    walmart: Object.freeze({
+        key: 'walmart',
+        label: 'Walmart',
+        folder: 'WALLMART',
+        aliases: ['WALMART'],
+        fileLabel: 'PDF',
+        mimeType: 'application/pdf',
+        fallbackToRoot: false,
+    }),
+});
+
+const PDF_LABEL_SOURCE_KEYS = Object.freeze(['bluexpress', 'walmart']);
+
+// ─── FIX #8 — _keyStore: API Key ofuscada con base64 ──────────────────────────
+// No es cifrado real (imposible sin backend), pero evita que la key quede
+// legible en texto plano en localStorage. Prefix 'ds1:' identifica el formato
+// y permite compatibilidad con versiones anteriores (plain text).
+
+const _keyStore = {
+    _PREFIX: 'ds1:',
+
+    _encode(val) {
+        try { return this._PREFIX + btoa(unescape(encodeURIComponent(val))); }
+        catch { return val; }
+    },
+
+    _decode(raw) {
+        try {
+            if (raw.startsWith(this._PREFIX))
+                return decodeURIComponent(escape(atob(raw.slice(this._PREFIX.length))));
+            return raw;     // compatibilidad plain text legacy
+        } catch { return null; }
+    },
+
+    save(key) {
+        try { localStorage.setItem(DRIVE_CONFIG.API_KEY_KEY, this._encode(key.trim())); }
+        catch (e) { console.warn('[DriveSync] No se pudo guardar API Key:', e); }
+    },
+
+    load() {
+        try {
+            const raw = localStorage.getItem(DRIVE_CONFIG.API_KEY_KEY);
+            return raw ? this._decode(raw) : null;
+        } catch { return null; }
+    },
+
+    exists() { return !!this.load(); },
+    clear()  { try { localStorage.removeItem(DRIVE_CONFIG.API_KEY_KEY); } catch {} },
+};
+
+// ─── FIX #7 — _gapi: flag encapsulado ─────────────────────────────────────────
+// En vez de un `let _gapiReady` suelto en el módulo, lo centralizamos aquí.
+// Cambios en _gapiReady desde fuera del módulo ya no son posibles por accidente.
+
+const _gapi = {
+    _ready: false,
+    get ready()  { return this._ready; },
+    setReady()   { this._ready = true; },
+    reset()      { this._ready = false; },
+};
+
+// ─── Token Store ───────────────────────────────────────────────────────────────
+
+const _tokenStore = {
+    save(tokenResponse) {
+        const payload = {
+            access_token: tokenResponse.access_token,
+            expires_at:   Date.now() + (tokenResponse.expires_in ?? 3600) * 1000,
+        };
+        try { localStorage.setItem(DRIVE_CONFIG.TOKEN_KEY, JSON.stringify(payload)); }
+        catch {}
+        return payload;
+    },
+
+    load() {
+        try {
+            const raw = localStorage.getItem(DRIVE_CONFIG.TOKEN_KEY);
+            return raw ? JSON.parse(raw) : null;
+        } catch { return null; }
+    },
+
+    isValid(margin = DRIVE_CONFIG.TOKEN_REFRESH_MARGIN) {
+        const t = this.load();
+        return !!(t?.access_token && t.expires_at > Date.now() + margin);
+    },
+
+    applyToGapi() {
+        const t = this.load();
+        if (t?.access_token) { gapi.client.setToken({ access_token: t.access_token }); return true; }
+        return false;
+    },
+
+    clear() { try { localStorage.removeItem(DRIVE_CONFIG.TOKEN_KEY); } catch {} },
+};
+
+// ─── Procesados del día ────────────────────────────────────────────────────────
+
+function _todayKey() {
+    const d = new Date();
+    return `drive_processed_${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+}
+
+// IDs procesados (Set) — evita reprocesar el mismo archivo
+function _loadProcessedIds() {
+    try {
+        const saved = localStorage.getItem(_todayKey());
+        return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch { return new Set(); }
+}
+
+function _saveProcessedIds() {
+    try { localStorage.setItem(_todayKey(), JSON.stringify([..._state.processedIds])); }
+    catch {}
+}
+
+// Lista de display (Array) — persiste lo que se muestra en "Procesados hoy"
+function _loadProcessedList() {
+    try {
+        const saved = localStorage.getItem(_todayKey() + '_list');
+        if (!saved) return [];
+        const parsed = JSON.parse(saved);
+        return Array.isArray(parsed)
+            ? parsed.map(item => ({ ...item, processedAt: new Date(item.processedAt) }))
+            : [];
+    } catch { return []; }
+}
+
+function _saveProcessedList() {
+    try { localStorage.setItem(_todayKey() + '_list', JSON.stringify(_state.processed)); }
+    catch {}
+}
+
+function _seenFilesKey() {
+    return _todayKey() + '_seen_files';
+}
+
+function _loadSeenFiles() {
+    try {
+        const raw = localStorage.getItem(_seenFilesKey());
+        const saved = raw ? JSON.parse(raw) : {};
+        return {
+            ids: new Set(Array.isArray(saved.ids) ? saved.ids : []),
+            names: new Set(Array.isArray(saved.names) ? saved.names : []),
+        };
+    } catch {
+        return { ids: new Set(), names: new Set() };
+    }
+}
+
+const _initialSeenFiles = _loadSeenFiles();
+
+function _saveSeenFiles() {
+    try {
+        localStorage.setItem(_seenFilesKey(), JSON.stringify({
+            ids: [..._state.knownIds],
+            names: [..._state.knownNames],
+        }));
+    } catch {}
+}
+
+// ─── FIX #6 — _state con Proxy ────────────────────────────────────────────────
+// Valida tipos y valores al asignar. Errores de tipeo o asignaciones de tipo
+// incorrecto generan un warning en consola y se ignoran silenciosamente,
+// sin romper el flujo de la aplicación.
+
+function _loadCarrierPrintedLabels() {
+    try {
+        const raw = localStorage.getItem(DRIVE_CONFIG.CARRIER_PRINTED_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+function _saveCarrierPrintedLabels() {
+    try {
+        localStorage.setItem(DRIVE_CONFIG.CARRIER_PRINTED_KEY, JSON.stringify(_state.carrierPrinted || {}));
+    } catch {}
+}
+
+function _carrierPrintKey(sourceKey, fileId) {
+    const id = typeof fileId === 'object' ? fileId?.id : fileId;
+    return sourceKey && id ? `${sourceKey}:${id}` : '';
+}
+
+function _getCarrierPrintedInfo(sourceKey, fileId) {
+    const key = _carrierPrintKey(sourceKey, fileId);
+    return key ? (_state.carrierPrinted?.[key] || null) : null;
+}
+
+function _formatCarrierPrintedAt(info) {
+    if (!info?.printedAt) return '';
+    return [_formatDriveDate(info.printedAt), _formatDriveTime(info.printedAt)].filter(Boolean).join(', ');
+}
+
+function _carrierPrintStatusText(info) {
+    const printedAt = _formatCarrierPrintedAt(info);
+    return info ? `Impresa${printedAt ? ` ${printedAt}` : ''}` : 'Pendiente';
+}
+
+function _carrierPrintStatusHtml(sourceKey, fileId) {
+    const info = _getCarrierPrintedInfo(sourceKey, fileId);
+    const stateClass = info ? 'is-printed' : 'is-pending';
+    const label = info ? 'Impresa' : 'Pendiente';
+    const title = _carrierPrintStatusText(info);
+    return `<span class="carrier-print-status ${stateClass}" title="${_esc(title)}">${_esc(label)}</span>`;
+}
+
+function _markCarrierPrinted(entry) {
+    const key = _carrierPrintKey(entry?.sourceKey, entry?.id);
+    if (!key) return null;
+
+    const info = {
+        sourceKey: entry.sourceKey,
+        fileId: entry.id,
+        name: entry.name || '',
+        printedAt: new Date().toISOString(),
+    };
+    _state.carrierPrinted = {
+        ...(_state.carrierPrinted || {}),
+        [key]: info,
+    };
+    _saveCarrierPrintedLabels();
+    return info;
+}
+
+const _VALID_MODES = new Set(['auto', 'manual']);
+
+const _stateRaw = {
+    mode:         localStorage.getItem(DRIVE_CONFIG.MODE_KEY) || 'auto',
+    isPolling:    false,
+    pollTimer:    null,
+    tokenClient:  null,
+    knownIds:     _initialSeenFiles.ids,
+    knownNames:   _initialSeenFiles.names,
+    knownFiles:   [],
+    carrierFiles: { bluexpress: [], walmart: [] },
+    carrierPrinted: _loadCarrierPrintedLabels(),
+    activeLabelSource: 'mercadolibre',
+    pending:      [],
+    processed:    _loadProcessedList(),
+    processedIds: _loadProcessedIds(),
+    panelOpen:    false,
+    offsetDay:    0,
+    _refreshing:  false,
+    _scanning:    false,
+    scanDayKey:   _todayKey(),
+};
+
+const _state = new Proxy(_stateRaw, {
+    set(target, key, value) {
+        if (key === 'mode' && !_VALID_MODES.has(value)) {
+            console.warn(`[DriveSync] mode inválido: "${value}". Usar: auto | manual`);
+            return true;
+        }
+        if ((key === 'isPolling' || key === '_refreshing' || key === '_scanning') && typeof value !== 'boolean') {
+            console.warn(`[DriveSync] ${key} debe ser boolean, recibido: ${typeof value}`);
+            return true;
+        }
+        if (key === 'offsetDay' && !Number.isInteger(value)) {
+            console.warn(`[DriveSync] offsetDay debe ser entero, recibido: ${value}`);
+            return true;
+        }
+        target[key] = value;
+        return true;
+    },
+});
+
+// ─── Helpers de fecha ─────────────────────────────────────────────────────────
+
+function _getMes(d = new Date()) { return `${MESES[d.getMonth()]} ${d.getFullYear()}`; }
+function _getDia(d = new Date()) { return `${d.getDate()} ${MESES[d.getMonth()]}`; }
+function _timeStr(d = new Date()) {
+    return d.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+}
+
+function _esc(str) {
+    return String(str ?? '')
+        .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ─── FIX #2 — UI helpers sin inline styles ────────────────────────────────────
+
+function _setStatus(text, active = false) {
+    const s = document.getElementById('drive-sync-status');
+    if (!s) return;
+    s.textContent = text;
+    s.classList.toggle('drive-sync-status--active', active);
+}
+
+function _setFileCount(n) {
+    const el  = document.getElementById('drive-file-count');
+    const num = document.getElementById('drive-file-count-num');
+    if (!el) return;
+    if (n === null || n === undefined) { el.style.display = 'none'; return; }
+    el.style.display = 'flex';
+    if (num) num.textContent = n;
+    el.title = 'Ver archivos del día';
+}
+
+function _setToast(text, ok = true) {
+    const t = document.getElementById('drive-sync-toast');
+    if (!t) return;
+    t.textContent = text;
+    t.classList.toggle('drive-sync-toast--error', !ok);
+    t.classList.remove('ds-hidden');
+    const snap = text;
+    setTimeout(() => { if (t.textContent === snap) t.classList.add('ds-hidden'); }, 6000);
+}
+
+function _restoreConnectBtn() {
+    const btn = document.getElementById('drive-sync-btn');
+    if (!btn) return;
+    btn.disabled = false;
+    btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"
+        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+        <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+    </svg> ${_keyStore.exists() ? 'Reconectar Drive' : 'Conectar Drive'}`;
+}
+
+// ─── FIX #1 — API Key inline (sin window.prompt) ──────────────────────────────
+
+function _showApiKeyInput() {
+    const panel = document.getElementById('drive-sync-panel');
+    if (!panel || document.getElementById('drive-apikey-row')) return;
+
+    const row = document.createElement('div');
+    row.id        = 'drive-apikey-row';
+    row.className = 'ds-apikey-row';
+    row.innerHTML = `
+        <input id="drive-apikey-input" type="password" class="ds-apikey-input"
+               placeholder="Google API Key…" autocomplete="off" spellcheck="false" />
+        <button id="drive-apikey-save" class="ds-btn ds-btn--save">Guardar</button>`;
+
+    panel.insertBefore(row, panel.querySelector('.lp-drive-btns-row') ?? null);
+
+    const input = row.querySelector('#drive-apikey-input');
+    const save  = row.querySelector('#drive-apikey-save');
+    const doSave = () => {
+        const val = input.value.trim();
+        if (!val) { input.classList.add('ds-apikey-input--error'); return; }
+        input.classList.remove('ds-apikey-input--error');
+        _keyStore.save(val);
+        row.remove();
+        _gapi.reset();
+        DriveSync.connect();
+    };
+    save.addEventListener('click', doSave);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSave(); });
+}
+
+function _removeApiKeyInput() {
+    document.getElementById('drive-apikey-row')?.remove();
+}
+
+// ─── FIX #2 — _applyMode con clases CSS ──────────────────────────────────────
+
+function _applyMode() {
+    document.getElementById('drive-mode-auto')?.classList.toggle('is-active', _state.mode === 'auto');
+    document.getElementById('drive-mode-manual')?.classList.toggle('is-active', _state.mode === 'manual');
+    const d = document.getElementById('drive-mode-desc');
+    if (d) d.innerHTML = _state.mode === 'auto'
+        ? 'Asigna a <strong>kmendoza</strong> y procesa automáticamente'
+        : 'Elegí usuario y procesá manualmente cada archivo';
+    _renderPending();
+}
+
+// ─── FIX #2 + #4 — Render pendientes ─────────────────────────────────────────
+
+function _renderPending() {
+    const section = document.getElementById('drive-pending-section');
+    const list    = document.getElementById('drive-pending-list');
+    const noPend  = document.getElementById('drive-no-pending');
+    if (!list || !section) return;
+
+    if (_state.mode !== 'manual') { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+
+    list.querySelectorAll('.ds-pending-row').forEach(r => r.remove());
+
+    if (_state.pending.length === 0) {
+        if (noPend) noPend.style.display = 'block';
+        return;
+    }
+    if (noPend) noPend.style.display = 'none';
+
+    const opts = _getPickerOptions();
+    const frag = document.createDocumentFragment();
+
+    for (const item of _state.pending) {
+        const optHtml = opts.map(o =>
+            `<option value="${_esc(o.v)}"
+                ${o.v.toLowerCase().includes(DRIVE_CONFIG.DEFAULT_PICKER) ? 'selected' : ''}>
+                ${_esc(o.l)}</option>`
+        ).join('');
+
+        const row = document.createElement('div');
+        row.className  = 'ds-pending-row';
+        row.dataset.id = item.id;
+        row.innerHTML  = `
+            <div class="ds-pending-header">
+                <span class="ds-pending-name" title="${_esc(item.name)}">📄 ${_esc(item.name)}</span>
+                <span class="ds-pending-time">
+                    ${item.uploadedAt
+                        ? `📅 ${_formatDriveDate(item.uploadedAt)} · 🕐 ${_formatDriveTime(item.uploadedAt)}`
+                        : _timeStr(item.detectedAt)}
+                </span>
+            </div>
+            <div class="ds-pending-tags">
+                <span class="ds-tag ds-tag--folder">${_esc(item.folder || 'Drive')}</span>
+                <span class="ds-tag ds-tag--bulk">${item.bulkCount} bulto${item.bulkCount !== 1 ? 's' : ''}</span>
+            </div>
+            <div class="ds-pending-actions">
+                <select class="ds-pending-select">${optHtml}</select>
+                <button class="ds-btn ds-btn--process">Procesar</button>
+                <button class="ds-btn ds-btn--dismiss">✕</button>
+            </div>`;
+        frag.appendChild(row);
+    }
+    list.appendChild(frag);
+}
+
+// FIX #4 — Un solo listener delegado, registrado una vez
+function _initPendingListeners() {
+    const list = document.getElementById('drive-pending-list');
+    if (!list || list.dataset.delegated) return;
+    list.dataset.delegated = '1';
+
+    list.addEventListener('click', async (e) => {
+        const row = e.target.closest('.ds-pending-row');
+        if (!row) return;
+        const id = row.dataset.id;
+
+        if (e.target.closest('.ds-btn--process')) {
+            const picker = row.querySelector('.ds-pending-select')?.value || DRIVE_CONFIG.DEFAULT_PICKER;
+            const btn    = row.querySelector('.ds-btn--process');
+            if (btn) { btn.disabled = true; btn.textContent = 'Procesando...'; }
+            await DriveSync.processItem(id, picker);
+        } else if (e.target.closest('.ds-btn--dismiss')) {
+            DriveSync.dismissItem(id);
+        }
+    });
+}
+
+// ─── FIX #2 — Render procesados ───────────────────────────────────────────────
+
+function _renderProcessed() {
+    const list    = document.getElementById('drive-processed-list');
+    const section = document.getElementById('drive-processed-section');
+    if (!list || !section) return;
+
+    if (_state.processed.length === 0) { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+    list.innerHTML = '';
+
+    const frag = document.createDocumentFragment();
+    for (const item of [..._state.processed].reverse()) {
+        const row = document.createElement('div');
+        row.className = 'ds-proc-row';
+        row.innerHTML = `
+            <span class="ds-proc-name" title="${_esc(item.name)}">✅ ${_esc(item.name)}</span>
+            <div class="ds-proc-meta">
+                <span class="ds-proc-picker">${_esc(item.picker)}</span>
+                <span class="ds-tag ds-tag--bulk">${item.bulkCount} bulto${item.bulkCount !== 1 ? 's' : ''}</span>
+                <span class="ds-proc-time">${_timeStr(item.processedAt)}</span>
+            </div>`;
+        frag.appendChild(row);
+    }
+    list.appendChild(frag);
+}
+
+// ─── FIX #2 + #4 — Panel archivos existentes ─────────────────────────────────
+// El panel y sus listeners se crean UNA sola vez.
+// Solo se actualiza el contenido de header y body en cada render.
+
+function _renderExistingPanel() {
+    let panel = document.getElementById('drive-existing-panel');
+
+    if (!panel) {
+        panel = document.createElement('div');
+        panel.id        = 'drive-existing-panel';
+        panel.className = 'ds-ep-panel';
+
+        const header = document.createElement('div');
+        header.id        = 'drive-ep-header';
+        header.className = 'ds-ep-header';
+
+        const body = document.createElement('div');
+        body.id        = 'drive-ep-body';
+        body.className = 'ds-ep-body';
+
+        panel.appendChild(header);
+        panel.appendChild(body);
+        document.getElementById('drive-sync-panel')?.appendChild(panel);
+
+        // FIX #4: listener registrado UNA SOLA VEZ en el panel
+        panel.addEventListener('click', async (e) => {
+            if (e.target.closest('.ds-ep-close'))    { DriveSync.togglePanel(); return; }
+            if (e.target.closest('[data-ep-prev]'))  { DriveSync.changeDay(-1); return; }
+            if (e.target.closest('[data-ep-next]'))  { DriveSync.changeDay(1);  return; }
+
+            const btn = e.target.closest('.ds-ep-btn-process');
+            if (btn && !btn.disabled) {
+                const fileId = btn.dataset.fileId;
+                const sel    = panel.querySelector(`.ds-ep-select[data-file-id="${CSS.escape(fileId)}"]`);
+                const picker = sel?.value || DRIVE_CONFIG.DEFAULT_PICKER;
+                btn.disabled    = true;
+                btn.textContent = 'Procesando...';
+                await DriveSync.processExisting(fileId, picker);
+            }
+        });
+    }
+
+    const header = document.getElementById('drive-ep-header');
+    const body   = document.getElementById('drive-ep-body');
+
+    // ── Header ──
+    const offsetD  = new Date();
+    offsetD.setDate(offsetD.getDate() + _state.offsetDay);
+    const diaStr   = _getDia(offsetD);
+    const dayLabel = _state.offsetDay === 0  ? `HOY · ${diaStr}`
+                   : _state.offsetDay === -1 ? `AYER · ${diaStr}`
+                   : _state.offsetDay ===  1 ? `MAÑANA · ${diaStr}`
+                   : diaStr;
+    const count = _state.knownFiles.length;
+
+    header.innerHTML = `
+        <div class="ds-ep-nav">
+            <button class="ds-ep-btn-nav" data-ep-prev>◀</button>
+            <span class="ds-ep-title">📁 ${dayLabel} — ${count} archivo${count !== 1 ? 's' : ''}</span>
+            <button class="ds-ep-btn-nav" data-ep-next>▶</button>
+        </div>
+        <button class="ds-ep-close">×</button>`;
+
+    // ── Body ──
+    const opts    = _getPickerOptions();
+    const optHtml = opts.map(o =>
+        `<option value="${_esc(o.v)}" ${o.v === DRIVE_CONFIG.DEFAULT_PICKER ? 'selected' : ''}>${_esc(o.l)}</option>`
+    ).join('');
+
+    if (_state.knownFiles.length === 0) {
+        body.innerHTML = `<div class="ds-ep-empty">Sin archivos en esta carpeta.</div>`;
+    } else {
+        const frag = document.createDocumentFragment();
+        for (const f of _state.knownFiles) {
+            const isDone = _state.processedIds.has(f.id);
+            const row    = document.createElement('div');
+            row.className = `ds-ep-file-row${isDone ? ' ds-ep-file-row--done' : ''}`;
+            const uploadDate = _formatDriveDate(f.createdTime);
+            const uploadTime = _formatDriveTime(f.createdTime);
+            row.innerHTML = `
+                <div class="ds-ep-file-top">
+                    <span class="ds-ep-file-name" title="${_esc(f.name)}">📄 ${_esc(f.name)}</span>
+                    <div class="ds-ep-file-meta">
+                        ${uploadDate ? `<span class="ds-ep-file-date">📅 ${uploadDate}</span>` : ''}
+                        ${uploadTime ? `<span class="ds-ep-file-time">🕐 ${uploadTime}</span>` : ''}
+                        <span class="ds-ep-file-folder">${_esc(f.folder || 'Drive')}</span>
+                    </div>
+                </div>
+                <div class="ds-ep-file-actions">
+                    ${isDone
+                        ? `<span class="ds-ep-done-badge">✅ Procesado</span>`
+                        : `<select class="ds-ep-select" data-file-id="${_esc(f.id)}">${optHtml}</select>
+                           <button class="ds-btn ds-btn--process ds-ep-btn-process"
+                               data-file-id="${_esc(f.id)}">Procesar</button>`
+                    }
+                </div>`;
+            frag.appendChild(row);
+        }
+        body.replaceChildren(frag);
+    }
+
+    panel.style.display = _state.panelOpen ? 'block' : 'none';
+}
+
+function _updateLabelSourceControls() {
+    const active = _state.activeLabelSource || 'mercadolibre';
+
+    document.querySelectorAll('.stat-item--carrier[data-label-source]').forEach(btn => {
+        const isActive = btn.dataset.labelSource === active;
+        btn.classList.toggle('is-active', isActive);
+        btn.setAttribute('aria-pressed', String(isActive));
+    });
+}
+
+function _updateCarrierStats() {
+    const blueCount = _state.carrierFiles.bluexpress?.length || 0;
+    const walmartCount = _state.carrierFiles.walmart?.length || 0;
+    const blueEl = document.getElementById('countBluexpress');
+    const walmartEl = document.getElementById('countWalmart');
+    if (blueEl) blueEl.textContent = String(blueCount);
+    if (walmartEl) walmartEl.textContent = String(walmartCount);
+}
+
+function _getActiveCarrierFiles(sourceKey = _state.activeLabelSource) {
+    return _state.carrierFiles[sourceKey] || [];
+}
+
+function _renderCarrierPanel() {
+    _updateCarrierStats();
+    _updateLabelSourceControls();
+
+    const active = _state.activeLabelSource || 'mercadolibre';
+    const isCarrier = active !== 'mercadolibre';
+    const source = _getSourceConfig(active);
+    const table = document.querySelector('#results .table-container');
+    const panel = document.getElementById('carrierLabelsPanel');
+
+    if (table) table.classList.toggle('is-hidden', isCarrier);
+    if (panel) panel.classList.toggle('is-hidden', !isCarrier);
+
+    if (!isCarrier) return;
+
+    const files = _getActiveCarrierFiles(active);
+    const title = document.getElementById('carrierLabelsTitle');
+    const summary = document.getElementById('carrierLabelsSummary');
+    const body = document.getElementById('carrierLabelsBody');
+    const meta = document.getElementById('resultsMeta');
+
+    if (title) title.textContent = `Etiquetas ${source.label}`;
+    if (summary) {
+        summary.textContent = files.length
+            ? `${files.length} archivo(s) PDF detectado(s) en Drive.`
+            : `Sin PDFs detectados en ${source.folder}.`;
+    }
+    if (meta) {
+        meta.textContent = files.length
+            ? `Mostrando ${files.length} etiqueta(s) PDF de ${source.label}.`
+            : `No hay etiquetas PDF de ${source.label} para mostrar.`;
+    }
+    if (!body) return;
+
+    if (files.length === 0) {
+        body.innerHTML = `<tr><td colspan="5" class="carrier-empty">Sin archivos PDF de ${_esc(source.label)} para mostrar.</td></tr>`;
+        return;
+    }
+
+    body.innerHTML = files.map(file => {
+        const date = _formatDriveDate(file.createdTime || file.modifiedTime);
+        const time = _formatDriveTime(file.createdTime || file.modifiedTime);
+        const folder = file.folder || source.folder;
+        return `
+            <tr>
+                <td>
+                    <div class="carrier-file-main">
+                        <strong>${_esc(file.name)}</strong>
+                        <span>${_esc(source.fileLabel)} desde Google Drive</span>
+                    </div>
+                </td>
+                <td><span class="carrier-source-pill">${_esc(folder)}</span></td>
+                <td>
+                    <div class="meta-cell">
+                        <strong>${_esc(date || 'Sin fecha')}</strong>
+                        <span>${_esc(time || '')}</span>
+                    </div>
+                </td>
+                <td>${_carrierPrintStatusHtml(active, file.id)}</td>
+                <td>
+                    <button class="carrier-open-btn" type="button"
+                        data-carrier-source="${_esc(active)}"
+                        data-carrier-file-id="${_esc(file.id)}">Abrir PDF</button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function _setActiveLabelSource(sourceKey) {
+    const source = _getSourceConfig(sourceKey);
+    _state.activeLabelSource = source.key;
+    _renderCarrierPanel();
+
+    if (source.key === 'mercadolibre') {
+        window.App?.table?.renderCurrentResults?.();
+        return;
+    }
+
+    if (source.key !== 'mercadolibre' && _state.isPolling && _getActiveCarrierFiles(source.key).length === 0) {
+        _refreshCarrierLabels(true);
+    }
+}
+
+async function _openCarrierFile(sourceKey, fileId) {
+    const source = _getSourceConfig(sourceKey);
+    const file = (_state.carrierFiles[sourceKey] || []).find(item => item.id === fileId);
+    if (!file?.id) {
+        _setToast('No se pudo abrir el PDF de Drive.', false);
+        return;
+    }
+
+    try {
+        const blob = await _downloadDriveBlob(file.id, 'application/pdf');
+        const date = _formatDriveDate(file.createdTime || file.modifiedTime) || 'Sin fecha';
+        const time = _formatDriveTime(file.createdTime || file.modifiedTime) || '';
+        const folder = file.folder || source.folder;
+        _showCarrierPrintModal(source, [{
+            sourceKey: source.key,
+            id: file.id,
+            name: file.name || `Etiqueta ${source.label}`,
+            meta: [folder, date, time].filter(Boolean).join(' - '),
+            url: URL.createObjectURL(blob),
+            printedInfo: _getCarrierPrintedInfo(source.key, file.id),
+        }]);
+        _setToast('PDF listo para revisar e imprimir.');
+    } catch (err) {
+        console.warn('[DriveSync] openCarrierFile:', err);
+        _setToast('No se pudo preparar el PDF de Drive.', false);
+    }
+}
+
+function _cleanupCarrierPrintEntries() {
+    for (const entry of _carrierPrintState.entries) {
+        if (entry?.url) URL.revokeObjectURL(entry.url);
+    }
+    _carrierPrintState.entries = [];
+    _carrierPrintState.activeIndex = 0;
+}
+
+function _ensureCarrierPrintModal() {
+    let modal = document.getElementById('carrierPrintModal');
+    if (modal) return modal;
+
+    modal = document.createElement('div');
+    modal.id = 'carrierPrintModal';
+    modal.className = 'carrier-print-modal';
+    modal.hidden = true;
+    modal.innerHTML = `
+        <div class="carrier-print-backdrop" data-carrier-print-close></div>
+        <section class="carrier-print-dialog" role="dialog" aria-modal="true" aria-labelledby="carrierPrintTitle">
+            <header class="carrier-print-head">
+                <div>
+                    <span class="carrier-print-kicker" id="carrierPrintKicker">Etiquetas PDF</span>
+                    <h2 id="carrierPrintTitle">Etiquetas</h2>
+                    <p id="carrierPrintMeta">Selecciona un PDF para revisar e imprimir.</p>
+                </div>
+                <button class="carrier-print-close" type="button" data-carrier-print-close aria-label="Cerrar visor">x</button>
+            </header>
+            <div class="carrier-print-body">
+                <aside class="carrier-print-side">
+                    <label for="carrierPrintSelect">Archivo PDF</label>
+                    <select id="carrierPrintSelect"></select>
+                    <div class="carrier-print-file-list" id="carrierPrintFileList"></div>
+                </aside>
+                <div class="carrier-print-viewer">
+                    <iframe id="carrierPrintFrame" title="Vista de etiqueta PDF"></iframe>
+                </div>
+            </div>
+            <footer class="carrier-print-actions">
+                <button class="carrier-print-secondary" type="button" data-carrier-print-close>Cerrar</button>
+                <button class="carrier-print-primary" id="carrierPrintPrintBtn" type="button">Imprimir PDF</button>
+            </footer>
+        </section>
+    `;
+
+    document.body.appendChild(modal);
+
+    modal.addEventListener('click', event => {
+        const closeBtn = event.target.closest('[data-carrier-print-close]');
+        if (closeBtn && modal.contains(closeBtn)) {
+            _closeCarrierPrintModal();
             return;
         }
 
-        const App = {
-            config: {
-                STORAGE_KEY: 'novapet_meli_documents_v2',
-                PICKERS_STORAGE_KEY: 'novapet_meli_picker_options_v1',
-                OUTSIDE_HOURS_HISTORY_KEY: 'novapet_meli_after_hours_history_v1',
-                ORDER_LOOKUP_STORAGE_KEY: 'novapet_meli_order_lookup_v1',
-                MANUAL_STATUS_STORAGE_KEY: 'novapet_meli_manual_status_v1',
-                ZEBRA_PRINTER_STORAGE_KEY: 'novapet_meli_zebra_printer_v1',
-                UI_THEME_STORAGE_KEY: 'novapet_meli_ui_theme_v1',
-                ZEBRA_BROWSER_PRINT_BASE_URL: 'http://127.0.0.1:9100',
-                ZEBRA_PRINTERS: Object.freeze({
-                    default: {
-                        key: 'default',
-                        label: 'Predeterminada',
-                        aliases: []
-                    },
-                    zebra02: {
-                        key: 'zebra02',
-                        label: 'ZEBRA 02',
-                        aliases: ['zebra 02', 'zebra02', '10.120.84.32', '10.120.84.32:9100']
-                    },
-                    zebra05: {
-                        key: 'zebra05',
-                        label: 'ZEBRA 05',
-                        aliases: ['zebra 05', 'zebra05', '10.120.84.33', '10.120.84.33:9100']
-                    }
-                }),
-                STORAGE_START_MINUTES: 7 * 60,
-                STORAGE_END_MINUTES: 18 * 60,
-                STORAGE_WINDOW_LABEL: '07:00 a 18:00',
-                HISTORY_PREVIEW_LIMIT: 10,
-                EMBEDDED_HISTORY_SCRIPT_ID: 'embeddedHistoryData',
-                PORTABLE_FILENAME_PREFIX: 'ExtraccionMeli-portable',
-                ORDER_LOOKUP_FIELDS: [
-                    {
-                        key: 'dato2',
-                        label: 'DATO2',
-                        required: true,
-                        searchable: true,
-                        aliases: ['DATO2']
-                    },
-                    {
-                        key: 'estado',
-                        label: 'ESTADO',
-                        required: true,
-                        aliases: ['ESTADO', 'ESTADOREV', 'ESTADOREVISION', 'ESTADOPEDIDO']
-                    },
-                    {
-                        key: 'logisticsType',
-                        label: 'RUTAS',
-                        aliases: []
-                    },
-                    {
-                        key: 'referenceNumber',
-                        label: 'NRO.',
-                        searchable: true,
-                        aliases: ['NRO', 'DOCUMENTODEREFERENCIA', 'NROREF', 'NROREFERENCIA', 'PEDIDO', 'ORDEN']
-                    },
-                    {
-                        key: 'buyerOrder',
-                        label: 'COMPRADOR',
-                        searchable: true,
-                        aliases: ['COMPRADOR']
-                    },
-                    {
-                        key: 'orderSource',
-                        label: 'TIPO SOLICITUD',
-                        aliases: ['TIPOSOLICITUD']
-                    },
-                    {
-                        key: 'dispatchRoute',
-                        label: 'RUTA DESPACHO',
-                        aliases: ['RUTADESPACHO', 'RUTA']
-                    }
-                ]
-            },
-
-            dom,
-
-            runtime: {
-                storage: null,
-                defaultPickerOptions: [],
-                clockTimeFormatter: new Intl.DateTimeFormat('es-CL', {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit',
-                    hour12: false
-                }),
-                dateTimeFormatter: new Intl.DateTimeFormat('es-CL', {
-                    day: '2-digit',
-                    month: '2-digit',
-                    year: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    hour12: false
-                })
-            },
-
-            defaults: {
-                selectionMessage: '',
-                emptyResultsMessage: 'Carga un archivo, pega texto o usa la busqueda para consultar documentos guardados.'
-            },
-
-            state: {
-                pickerOptions: [],
-                embeddedDocuments: [],
-                storedDocuments: [],
-                extractedRows: [],
-                rawZplData: '',
-                selectedRowIds: new Set(),
-                selectedRowsById: new Map(),
-                activeBaseRows: [],
-                activeBaseMessage: '',
-                currentResultRows: [],
-                currentResultMessage: '',
-                activeRowTypeFilter: 'all',
-                activeStatusFilter: '',
-                manualOrderStatuses: {},
-                selectedHistoryDocumentIds: new Set(),
-                outsideHoursHistoryEnabled: false,
-                notificationPanelOpen: false,
-                darkModeEnabled: false,
-                notifications: [],
-                orderLookupRows: [],
-                orderLookupDisplayColumns: [],
-                orderLookupFileName: '',
-                orderLookupMatches: [],
-                orderLookupAvailableStates: [],
-                orderLookupAvailableRoutes: [],
-                selectedZebraPrinter: 'default'
-            },
-
-            helpers: {
-                escapeHtml(value) {
-                    return String(value ?? '')
-                        .replace(/&/g, '&amp;')
-                        .replace(/</g, '&lt;')
-                        .replace(/>/g, '&gt;')
-                        .replace(/"/g, '&quot;')
-                        .replace(/'/g, '&#39;');
-                },
-
-                normalizePickerName(value) {
-                    return String(value ?? '').trim();
-                },
-
-                normalizeComparable(value) {
-                    const normalized = String(value ?? '').trim();
-                    return /^-?\d+(\.0+)?$/.test(normalized)
-                        ? normalized.replace(/\.0+$/, '')
-                        : normalized;
-                },
-
-                normalizeZebraPrinterKey(value) {
-                    const key = String(value ?? '').trim();
-                    return Object.prototype.hasOwnProperty.call(App.config.ZEBRA_PRINTERS, key)
-                        ? key
-                        : 'default';
-                },
-
-                normalizeHeaderKey(value) {
-                    return App.helpers
-                        .normalizeComparable(value)
-                        .normalize('NFD')
-                        .replace(/[\u0300-\u036f]/g, '')
-                        .toUpperCase()
-                        .replace(/[^A-Z0-9]+/g, '');
-                },
-
-                normalizePickerOptions(options, fallback = App.runtime.defaultPickerOptions) {
-                    const source = Array.isArray(options) && options.length > 0 ? options : fallback;
-                    const seen = new Set();
-
-                    return source
-                        .map(App.helpers.normalizePickerName)
-                        .filter(option => {
-                            const key = option.toLowerCase();
-                            if (!option || seen.has(key)) {
-                                return false;
-                            }
-
-                            seen.add(key);
-                            return true;
-                        });
-                },
-
-                summarizeDocumentType(rows = []) {
-                    const counts = rows.reduce((accumulator, row) => {
-                        if (row?.type === 'flex') {
-                            accumulator.flex += 1;
-                        } else if (row?.type === 'colecta') {
-                            accumulator.colecta += 1;
-                        } else {
-                            accumulator.other += 1;
-                        }
-
-                        return accumulator;
-                    }, { flex: 0, colecta: 0, other: 0 });
-
-                    if (counts.flex > 0 && counts.colecta === 0 && counts.other === 0) {
-                        return { key: 'flex', label: 'FLEX', detail: `${counts.flex} pedido(s)` };
-                    }
-
-                    if (counts.colecta > 0 && counts.flex === 0 && counts.other === 0) {
-                        return { key: 'colecta', label: 'COLECTA', detail: `${counts.colecta} pedido(s)` };
-                    }
-
-                    if (counts.flex > 0 || counts.colecta > 0) {
-                        return { key: 'mixto', label: 'MIXTO', detail: `Flex ${counts.flex} / Colecta ${counts.colecta}` };
-                    }
-
-                    return { key: 'sin-tipo', label: 'SIN TIPO', detail: `${rows.length} pedido(s)` };
-                }
-            },
-
-            ui: {
-                normalizeMessageType(type = 'info') {
-                    return ['error', 'success', 'warning', 'info'].includes(type) ? type : 'info';
-                },
-
-                getMessageTimeout(type = 'info') {
-                    const normalizedType = App.ui.normalizeMessageType(type);
-                    if (normalizedType === 'error') {
-                        return 5000;
-                    }
-
-                    if (normalizedType === 'success') {
-                        return 3800;
-                    }
-
-                    if (normalizedType === 'warning') {
-                        return 4200;
-                    }
-
-                    return 3500;
-                },
-
-                dismissMessage(item, options = {}) {
-                    if (!item) {
-                        return;
-                    }
-
-                    const { immediate = false } = options;
-                    const removeItem = () => {
-                        if (item.parentNode) {
-                            item.remove();
-                        }
-                    };
-
-                    if (item._messageTimer) {
-                        window.clearTimeout(item._messageTimer);
-                        item._messageTimer = null;
-                    }
-
-                    if (item._messageCloseTimer) {
-                        window.clearTimeout(item._messageCloseTimer);
-                        item._messageCloseTimer = null;
-                    }
-
-                    if (immediate) {
-                        removeItem();
-                        return;
-                    }
-
-                    if (item.dataset.toastState === 'leaving') {
-                        return;
-                    }
-
-                    item.dataset.toastState = 'leaving';
-                    item.classList.remove('is-visible');
-                    item.classList.add('is-leaving');
-                    item._messageCloseTimer = window.setTimeout(removeItem, 240);
-                },
-
-                showToast(message, type = 'info', options = {}) {
-                    const stack = App.dom.messageStack;
-                    if (!stack || !message) {
-                        return;
-                    }
-
-                    const {
-                        title = '',
-                        sticky = false,
-                        timeout = App.ui.getMessageTimeout(type)
-                    } = options;
-                    const normalizedType = App.ui.normalizeMessageType(type);
-
-                    const item = document.createElement('article');
-                    item.className = `app-message is-${normalizedType}`;
-                    item.setAttribute('role', normalizedType === 'error' ? 'alert' : 'status');
-                    item.dataset.toastState = 'entering';
-
-                    const content = document.createElement('div');
-                    content.className = 'app-message-content';
-
-                    if (title) {
-                        const titleNode = document.createElement('strong');
-                        titleNode.textContent = title;
-                        content.appendChild(titleNode);
-                    }
-
-                    const textNode = document.createElement('div');
-                    textNode.className = 'app-message-text';
-                    textNode.textContent = String(message);
-                    content.appendChild(textNode);
-
-                    const closeButton = document.createElement('button');
-                    closeButton.type = 'button';
-                    closeButton.className = 'app-message-close';
-                    closeButton.setAttribute('aria-label', 'Cerrar mensaje');
-                    closeButton.innerHTML = '&times;';
-                    closeButton.addEventListener('click', () => App.ui.dismissMessage(item));
-
-                    item.append(content, closeButton);
-                    stack.prepend(item);
-                    App.notifications.record({ title, message, type: normalizedType });
-                    window.requestAnimationFrame(() => {
-                        item.dataset.toastState = 'visible';
-                        item.classList.add('is-visible');
-                    });
-
-                    while (stack.children.length > 5) {
-                        App.ui.dismissMessage(stack.lastElementChild, { immediate: true });
-                    }
-
-                    if (!sticky) {
-                        item._messageTimer = window.setTimeout(() => {
-                            App.ui.dismissMessage(item);
-                        }, timeout);
-                    }
-                },
-
-                showMessage(message, type = 'info', options = {}) {
-                    App.ui.showToast(message, type, options);
-                },
-
-                reportError(error, fallbackMessage, title = 'Error') {
-                    console.error(error);
-                    App.ui.showMessage(error?.message || fallbackMessage, 'error', { title });
-                },
-
-                updateResultsMeta(message) {
-                    App.dom.resultsMeta.textContent = message || '';
-                },
-
-                setResultsVisible(visible) {
-                    if (!App.dom.resultsPanel) {
-                        return;
-                    }
-
-                    App.dom.resultsPanel.style.display = 'block';
-                    App.dom.resultsPanel.dataset.resultsState = visible ? 'active' : 'idle';
-                },
-
-                setClearButtonVisible(visible) {
-                    App.dom.clearBtn.classList.toggle('is-hidden', !visible);
-                }
-            },
-
-            notifications: {
-                record({ title = '', message = '', type = 'info' } = {}) {
-                    if (!message) {
-                        return;
-                    }
-
-                    App.state.notifications.unshift({
-                        id: `notice-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-                        title: title || App.notifications.getDefaultTitle(type),
-                        message: String(message),
-                        type: App.ui.normalizeMessageType(type),
-                        createdAt: new Date().toISOString()
-                    });
-
-                    App.state.notifications = App.state.notifications.slice(0, 8);
-                    App.notifications.updateBadge();
-
-                    if (App.state.notificationPanelOpen) {
-                        App.notifications.render();
-                    }
-                },
-
-                getDefaultTitle(type) {
-                    return type === 'error'
-                        ? 'Error'
-                        : type === 'warning'
-                            ? 'Atencion'
-                            : type === 'success'
-                                ? 'Listo'
-                                : 'Aviso';
-                },
-
-                getNumberFromText(value) {
-                    const match = String(value || '').match(/\d+/);
-                    return match ? Number(match[0]) : 0;
-                },
-
-                getDriveModeLabel() {
-                    if (document.getElementById('drive-mode-manual')?.classList.contains('is-active')) {
-                        return 'Manual';
-                    }
-
-                    if (document.getElementById('drive-mode-auto')?.classList.contains('is-active')) {
-                        return 'Automatico';
-                    }
-
-                    return 'Sin modo';
-                },
-
-                getSnapshot() {
-                    const storedRows = App.state.storedDocuments.reduce(
-                        (sum, documentItem) => sum + (Array.isArray(documentItem.rows) ? documentItem.rows.length : 0),
-                        0
-                    );
-                    const pendingCount = document.querySelectorAll('#drive-pending-list .ds-pending-row').length;
-                    const driveFileText = document.getElementById('drive-file-count-num')?.textContent || '';
-                    const bluexpressCount = App.notifications.getNumberFromText(document.getElementById('countBluexpress')?.textContent);
-                    const walmartCount = App.notifications.getNumberFromText(document.getElementById('countWalmart')?.textContent);
-
-                    return {
-                        driveStatus: App.helpers.normalizeComparable(document.getElementById('drive-sync-status')?.textContent) || 'Desconectado',
-                        driveMode: App.notifications.getDriveModeLabel(),
-                        driveFiles: App.notifications.getNumberFromText(driveFileText),
-                        pendingCount,
-                        currentRows: App.state.extractedRows.length,
-                        storedDocuments: App.state.storedDocuments.length,
-                        storedRows,
-                        excelFileName: App.state.orderLookupFileName || '',
-                        orderRows: App.state.orderLookupRows.length,
-                        orderMatches: App.state.orderLookupMatches.length,
-                        bluexpressCount,
-                        walmartCount,
-                        storageStatus: App.helpers.normalizeComparable(App.dom.storageStatus?.textContent) || 'Sin estado'
-                    };
-                },
-
-                getActiveCount(snapshot = App.notifications.getSnapshot()) {
-                    const warningCount = App.state.notifications.filter(item => item.type === 'warning' || item.type === 'error').length;
-                    return Math.min(99, snapshot.pendingCount + warningCount);
-                },
-
-                updateBadge() {
-                    if (!App.dom.notificationBadge) {
-                        return;
-                    }
-
-                    const count = App.notifications.getActiveCount();
-                    App.dom.notificationBadge.textContent = count > 9 ? '9+' : String(count);
-                    App.dom.notificationBadge.classList.toggle('is-visible', count > 0);
-                },
-
-                renderSummary(snapshot = App.notifications.getSnapshot()) {
-                    if (!App.dom.notificationSummary) {
-                        return;
-                    }
-
-                    App.dom.notificationSummary.innerHTML = `
-                        <div class="notification-summary-item">
-                            <strong>${App.helpers.escapeHtml(snapshot.driveFiles)}</strong>
-                            <span>Drive</span>
-                        </div>
-                        <div class="notification-summary-item">
-                            <strong>${App.helpers.escapeHtml(snapshot.currentRows)}</strong>
-                            <span>Carga actual</span>
-                        </div>
-                        <div class="notification-summary-item">
-                            <strong>${App.helpers.escapeHtml(snapshot.orderMatches)}</strong>
-                            <span>Con estado</span>
-                        </div>
-                    `;
-                },
-
-                getRenderItems(snapshot = App.notifications.getSnapshot()) {
-                    const items = [
-                        {
-                            type: snapshot.driveStatus.toLowerCase().includes('desconectado') ? 'warning' : 'success',
-                            title: 'Google Drive',
-                            body: `${snapshot.driveStatus}. Modo ${snapshot.driveMode}. ${snapshot.pendingCount} pendiente(s).`
-                        },
-                        {
-                            type: snapshot.currentRows > 0 ? 'success' : 'info',
-                            title: 'Carga actual',
-                            body: snapshot.currentRows > 0
-                                ? `${snapshot.currentRows} pedido(s) listo(s) para CSV o impresion.`
-                                : 'Aun no hay pedidos cargados en la tabla.'
-                        },
-                        {
-                            type: snapshot.storedDocuments > 0 ? 'success' : 'info',
-                            title: 'Historial local',
-                            body: `${snapshot.storedDocuments} documento(s) y ${snapshot.storedRows} pedido(s) guardado(s).`
-                        },
-                        {
-                            type: snapshot.orderRows > 0 ? 'success' : 'warning',
-                            title: 'Consulta de estados',
-                            body: snapshot.orderRows > 0
-                                ? `${snapshot.orderRows} pedido(s) del Excel. ${snapshot.orderMatches} coinciden con la carga actual.`
-                                : 'Carga un Excel para ver Digitacion, Picking completo, N/D y otros estados.'
-                        },
-                        {
-                            type: snapshot.bluexpressCount + snapshot.walmartCount > 0 ? 'success' : 'info',
-                            title: 'Etiquetas PDF',
-                            body: `Bluexpress: ${snapshot.bluexpressCount}. Walmart: ${snapshot.walmartCount}.`
-                        },
-                        {
-                            type: 'info',
-                            title: 'Almacenamiento',
-                            body: snapshot.storageStatus
-                        }
-                    ];
-
-                    App.state.notifications.slice(0, 3).forEach(item => {
-                        items.push({
-                            type: item.type,
-                            title: item.title,
-                            body: item.message
-                        });
-                    });
-
-                    return items;
-                },
-
-                render() {
-                    if (!App.dom.notificationList) {
-                        return;
-                    }
-
-                    const snapshot = App.notifications.getSnapshot();
-                    App.notifications.renderSummary(snapshot);
-                    App.dom.notificationList.innerHTML = App.notifications.getRenderItems(snapshot)
-                        .map(item => `
-                            <article class="notification-item is-${App.helpers.escapeHtml(item.type)}">
-                                <div>
-                                    <strong>${App.helpers.escapeHtml(item.title)}</strong>
-                                    <span>${App.helpers.escapeHtml(item.body)}</span>
-                                </div>
-                            </article>
-                        `)
-                        .join('');
-                    App.notifications.updateBadge();
-                },
-
-                setOpen(open) {
-                    App.state.notificationPanelOpen = Boolean(open);
-                    if (App.dom.notificationPanel) {
-                        App.dom.notificationPanel.hidden = !App.state.notificationPanelOpen;
-                    }
-                    if (App.dom.notificationBellBtn) {
-                        App.dom.notificationBellBtn.classList.toggle('is-open', App.state.notificationPanelOpen);
-                        App.dom.notificationBellBtn.setAttribute('aria-expanded', String(App.state.notificationPanelOpen));
-                    }
-
-                    if (App.state.notificationPanelOpen) {
-                        App.notifications.render();
-                    }
-                },
-
-                toggle() {
-                    App.notifications.setOpen(!App.state.notificationPanelOpen);
-                },
-
-                openDrivePanel() {
-                    try {
-                        if (typeof DriveSync !== 'undefined' && DriveSync?.togglePanel) {
-                            DriveSync.togglePanel();
-                        }
-                    } catch (error) {
-                        App.ui.reportError(error, 'No fue posible abrir el panel de Drive.', 'Drive');
-                    }
-                }
-            },
-
-            theme: {
-                loadPreference() {
-                    if (!App.runtime.storage) {
-                        return false;
-                    }
-
-                    try {
-                        return App.runtime.storage.getItem(App.config.UI_THEME_STORAGE_KEY) === 'dark';
-                    } catch (error) {
-                        console.warn('No se pudo leer la preferencia de tema.', error);
-                        return false;
-                    }
-                },
-
-                savePreference(enabled) {
-                    if (!App.runtime.storage) {
-                        return;
-                    }
-
-                    try {
-                        App.runtime.storage.setItem(App.config.UI_THEME_STORAGE_KEY, enabled ? 'dark' : 'light');
-                    } catch (error) {
-                        console.warn('No se pudo guardar la preferencia de tema.', error);
-                    }
-                },
-
-                apply(enabled, options = {}) {
-                    const isDark = Boolean(enabled);
-                    App.state.darkModeEnabled = isDark;
-                    document.body.classList.toggle('is-dark-mode', isDark);
-                    document.documentElement.classList.toggle('is-dark-mode', isDark);
-
-                    if (App.dom.themeToggleBtn) {
-                        const label = isDark ? 'Desactivar modo oscuro' : 'Activar modo oscuro';
-                        App.dom.themeToggleBtn.classList.toggle('is-active', isDark);
-                        App.dom.themeToggleBtn.setAttribute('aria-pressed', String(isDark));
-                        App.dom.themeToggleBtn.setAttribute('aria-label', label);
-                        App.dom.themeToggleBtn.title = label;
-                    }
-
-                    if (options.persist) {
-                        App.theme.savePreference(isDark);
-                    }
-                },
-
-                toggle() {
-                    App.theme.apply(!App.state.darkModeEnabled, { persist: true });
-                }
-            },
-
-            systemStatus: {
-                normalizeText(value) {
-                    return String(value ?? '')
-                        .normalize('NFD')
-                        .replace(/[\u0300-\u036f]/g, '')
-                        .toLowerCase()
-                        .trim();
-                },
-
-                getDriveStatusText() {
-                    return document.getElementById('drive-sync-status')?.textContent || '';
-                },
-
-                getCurrentState() {
-                    const driveText = App.systemStatus.normalizeText(App.systemStatus.getDriveStatusText());
-                    const storageClosed = App.dom.storageStatus?.classList.contains('is-closed');
-
-                    if (/(error|expir|reconectar|reintent|fallo|fallo|oauth)/i.test(driveText)) {
-                        return {
-                            key: 'error',
-                            label: 'Error de conexion',
-                            title: 'Hay un problema con Drive o la conexion. Revisa Conectar Drive.'
-                        };
-                    }
-
-                    if (driveText.includes('monitoreando')) {
-                        return {
-                            key: 'monitoring',
-                            label: 'Monitoreando',
-                            title: 'Drive esta conectado y revisando archivos nuevos.'
-                        };
-                    }
-
-                    if (driveText.includes('desconectado')) {
-                        return {
-                            key: 'warning',
-                            label: 'Sin Drive',
-                            title: 'Google Drive no esta conectado.'
-                        };
-                    }
-
-                    if (storageClosed) {
-                        return {
-                            key: 'closed',
-                            label: 'Fuera de horario',
-                            title: 'El historial local esta fuera de la franja 07:00 a 18:00.'
-                        };
-                    }
-
-                    return {
-                        key: 'operational',
-                        label: 'Sistema operativo',
-                        title: 'La interfaz esta funcionando.'
-                    };
-                },
-
-                refresh() {
-                    const indicator = App.dom.appSystemStatus;
-                    if (!indicator) {
-                        return;
-                    }
-
-                    const state = App.systemStatus.getCurrentState();
-                    const label = indicator.querySelector('.app-system-status-label');
-
-                    indicator.classList.remove('is-operational', 'is-monitoring', 'is-warning', 'is-closed', 'is-error');
-                    indicator.classList.add(`is-${state.key}`);
-                    indicator.dataset.systemState = state.key;
-                    indicator.title = state.title;
-                    indicator.setAttribute('aria-label', `${state.label}: ${state.title}`);
-
-                    if (label) {
-                        label.textContent = state.label;
-                    }
-                }
-            },
-
-            parser: {
-                hashString(value) {
-                    let hash = 2166136261;
-
-                    for (let index = 0; index < value.length; index += 1) {
-                        hash ^= value.charCodeAt(index);
-                        hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
-                    }
-
-                    return (hash >>> 0).toString(16).padStart(8, '0');
-                },
-
-                buildDocumentFingerprint(rows) {
-                    if (!Array.isArray(rows) || rows.length === 0) {
-                        return '';
-                    }
-
-                    const signature = rows
-                        .map(row => [
-                            row.numero || '',
-                            row.type || '',
-                            row.picking || '',
-                            row.revision || '',
-                            row.zpl || ''
-                        ].join('|'))
-                        .join('||');
-
-                    return `doc-${rows.length}-${App.parser.hashString(signature)}`;
-                },
-
-                getDocumentFingerprint(documentItem) {
-                    if (!documentItem) {
-                        return '';
-                    }
-
-                    return documentItem.fingerprint || App.parser.buildDocumentFingerprint(documentItem.rows);
-                },
-
-                buildDuplicateFilesMessage(fileNames) {
-                    if (fileNames.length === 1) {
-                        return `El archivo "${fileNames[0]}" ya habia sido guardado anteriormente y no se volvio a cargar.`;
-                    }
-
-                    return `Los siguientes archivos ya habian sido guardados anteriormente y no se volvieron a cargar:\n- ${fileNames.join('\n- ')}`;
-                },
-
-                readFileAsText(file) {
-                    return new Promise((resolve, reject) => {
-                        const reader = new FileReader();
-                        reader.onload = event => resolve(String(event.target?.result || ''));
-                        reader.onerror = () => reject(new Error(`No se pudo leer el archivo "${file.name}".`));
-                        reader.readAsText(file);
-                    });
-                },
-
-                extractBlocksFromText(text) {
-                    const normalizedText = String(text ?? '').replace(/\r/g, '').trim();
-                    if (!normalizedText) {
-                        return [];
-                    }
-
-                    const rawBlocks = normalizedText.includes('^XA')
-                        ? normalizedText.split(/(?=\^XA)/gi)
-                        : normalizedText.split(/\^XZ/gi);
-
-                    return rawBlocks
-                        .map(block => block.trim())
-                        .filter(Boolean)
-                        .map(block => block.endsWith('^XZ') ? block : `${block}^XZ`)
-                        .filter(block => /"id"\s*:\s*"?\d+"?/i.test(block) || /"shipping_id"\s*:\s*"?\d+"?/i.test(block));
-                },
-
-                buildRowFromBlock(block, picker) {
-                    const match = /"id"\s*:\s*"?(?<id>\d+)"?/i.exec(block)
-                        || /"shipping_id"\s*:\s*"?(?<id>\d+)"?/i.exec(block);
-
-                    if (!match) {
-                        return null;
-                    }
-
-                    const normalizedBlock = String(block ?? '').trim();
-                    const isFlex = /\bflex\b/i.test(normalizedBlock) || /MESA05|REVISION05/i.test(normalizedBlock);
-
-                    return {
-                        proceso: 'INT-PICK-MERCADOLIBRE-MAS',
-                        numero: match.groups?.id || match[1],
-                        picker,
-                        picking: isFlex ? 'MESA05_CD' : 'MESA03_CD',
-                        revision: isFlex ? 'REVISION05_CD' : 'REVISION03_CD',
-                        type: isFlex ? 'flex' : 'colecta',
-                        zpl: normalizedBlock.endsWith('^XZ') ? normalizedBlock : `${normalizedBlock}^XZ`
-                    };
-                },
-
-                extractRowsFromText(text, picker) {
-                    return App.parser.extractBlocksFromText(text).reduce((rows, block) => {
-                        const row = App.parser.buildRowFromBlock(block, picker);
-                        if (row) {
-                            rows.push(row);
-                        }
-                        return rows;
-                    }, []);
-                },
-
-                createDocumentRecord({ picker, sourceName, sourceType, text }) {
-                    const rows = App.parser.extractRowsFromText(text, picker);
-                    if (rows.length === 0) {
-                        return null;
-                    }
-
-                    return {
-                        id: `doc-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`,
-                        picker,
-                        sourceName,
-                        sourceType,
-                        storedAt: new Date().toISOString(),
-                        fingerprint: App.parser.buildDocumentFingerprint(rows),
-                        rows
-                    };
-                }
-            },
-            storage: {
-                getBrowserStorage() {
-                    try {
-                        const testKey = '__novapet_storage_test__';
-                        window.localStorage.setItem(testKey, '1');
-                        window.localStorage.removeItem(testKey);
-                        return window.localStorage;
-                    } catch (error) {
-                        return null;
-                    }
-                },
-
-                loadEmbeddedPayload() {
-                    const embeddedHistoryNode = document.getElementById(App.config.EMBEDDED_HISTORY_SCRIPT_ID);
-                    if (!embeddedHistoryNode) {
-                        return {};
-                    }
-
-                    try {
-                        const parsed = JSON.parse(embeddedHistoryNode.textContent || '{}');
-                        return parsed && typeof parsed === 'object' ? parsed : {};
-                    } catch (error) {
-                        return {};
-                    }
-                },
-
-                loadStoredPickerOptions() {
-                    if (!App.runtime.storage) {
-                        return [];
-                    }
-
-                    try {
-                        const parsed = JSON.parse(App.runtime.storage.getItem(App.config.PICKERS_STORAGE_KEY) || '[]');
-                        return App.helpers.normalizePickerOptions(parsed, []);
-                    } catch (error) {
-                        return [];
-                    }
-                },
-
-                loadEmbeddedPickerOptions() {
-                    const parsed = App.storage.loadEmbeddedPayload();
-                    return App.helpers.normalizePickerOptions(parsed.users, []);
-                },
-
-                normalizeManualOrderStatuses(statuses) {
-                    if (!statuses || typeof statuses !== 'object') {
-                        return {};
-                    }
-
-                    return Object.entries(statuses).reduce((normalizedStatuses, [rawOrderNumber, rawRecord]) => {
-                        const orderNumber = App.helpers.normalizeComparable(rawOrderNumber);
-                        if (!orderNumber) {
-                            return normalizedStatuses;
-                        }
-
-                        const record = rawRecord && typeof rawRecord === 'object'
-                            ? rawRecord
-                            : { status: rawRecord };
-                        const status = App.helpers.normalizeComparable(record.status) || 'PEDIDO CANCELADO';
-
-                        normalizedStatuses[orderNumber] = {
-                            status,
-                            updatedAt: App.helpers.normalizeComparable(record.updatedAt) || new Date().toISOString()
-                        };
-                        return normalizedStatuses;
-                    }, {});
-                },
-
-                loadStoredManualOrderStatuses() {
-                    if (!App.runtime.storage) {
-                        return {};
-                    }
-
-                    try {
-                        const parsed = JSON.parse(App.runtime.storage.getItem(App.config.MANUAL_STATUS_STORAGE_KEY) || '{}');
-                        return App.storage.normalizeManualOrderStatuses(parsed);
-                    } catch (error) {
-                        return {};
-                    }
-                },
-
-                loadEmbeddedManualOrderStatuses() {
-                    const parsed = App.storage.loadEmbeddedPayload();
-                    return App.storage.normalizeManualOrderStatuses(parsed.manualStatuses);
-                },
-
-                persistManualOrderStatuses(statuses = App.state.manualOrderStatuses) {
-                    try {
-                        const normalizedStatuses = App.storage.normalizeManualOrderStatuses(statuses);
-                        App.state.manualOrderStatuses = normalizedStatuses;
-
-                        if (App.runtime.storage) {
-                            App.runtime.storage.setItem(
-                                App.config.MANUAL_STATUS_STORAGE_KEY,
-                                JSON.stringify(normalizedStatuses)
-                            );
-                        }
-
-                        App.storage.writeEmbeddedState({ manualStatuses: normalizedStatuses });
-                        return true;
-                    } catch (error) {
-                        console.error(error);
-                        App.ui.showMessage(
-                            'No fue posible guardar el estado manual del pedido.',
-                            'error',
-                            { title: 'Pedido cancelado' }
-                        );
-                        return false;
-                    }
-                },
-
-                normalizeDocuments(documents) {
-                    if (!Array.isArray(documents)) {
-                        return [];
-                    }
-
-                    const seen = new Set();
-
-                    return [...documents]
-                        .filter(documentItem => documentItem && Array.isArray(documentItem.rows))
-                        .map(documentItem => ({
-                            ...documentItem,
-                            fingerprint: App.parser.getDocumentFingerprint(documentItem)
-                        }))
-                        .sort((a, b) => new Date(b.storedAt || 0) - new Date(a.storedAt || 0))
-                        .filter(documentItem => {
-                            const key = documentItem.fingerprint
-                                || documentItem.id
-                                || `${documentItem.sourceName || 'sin-nombre'}-${documentItem.storedAt || ''}-${documentItem.rows.length}`;
-
-                            if (seen.has(key)) {
-                                return false;
-                            }
-
-                            seen.add(key);
-                            return true;
-                        });
-                },
-
-                loadStoredDocuments() {
-                    if (!App.runtime.storage) {
-                        return [];
-                    }
-
-                    try {
-                        const parsed = JSON.parse(App.runtime.storage.getItem(App.config.STORAGE_KEY) || '[]');
-                        return App.storage.normalizeDocuments(parsed);
-                    } catch (error) {
-                        return [];
-                    }
-                },
-
-                loadEmbeddedDocuments() {
-                    const parsed = App.storage.loadEmbeddedPayload();
-                    return App.storage.normalizeDocuments(parsed.documents);
-                },
-
-                getVisibleStoredDocuments(...documentGroups) {
-                    const now = new Date();
-                    const todayKey = App.storage.getDateKey(now);
-                    const mergedDocuments = App.storage.normalizeDocuments(documentGroups.flat());
-
-                    if (!App.storage.isHistoryEnabledNow(now)) {
-                        return [];
-                    }
-
-                    return mergedDocuments.filter(documentItem => App.storage.getDateKey(documentItem.storedAt) === todayKey);
-                },
-
-                loadOutsideHoursHistoryPreference() {
-                    if (!App.runtime.storage) {
-                        return false;
-                    }
-
-                    try {
-                        return App.runtime.storage.getItem(App.config.OUTSIDE_HOURS_HISTORY_KEY) === '1';
-                    } catch (error) {
-                        return false;
-                    }
-                },
-
-                normalizeOrderLookupRows(rows) {
-                    if (!Array.isArray(rows)) {
-                        return [];
-                    }
-
-                    const allowedKeys = new Set([
-                        ...App.orderLookup.getFieldDefinitions().map(field => field.key),
-                        'logisticsType'
-                    ]);
-
-                    return rows
-                        .filter(row => row && typeof row === 'object')
-                        .map(row => Array.from(allowedKeys).reduce((normalizedRow, key) => {
-                            normalizedRow[key] = App.helpers.normalizeComparable(row[key]);
-                            return normalizedRow;
-                        }, {}))
-                        .filter(row => (
-                            App.orderLookup.getSearchableFields().some(field => App.helpers.normalizeComparable(row[field.key]) !== '')
-                            || App.helpers.normalizeComparable(row.estado) !== ''
-                        ));
-                },
-
-                loadStoredOrderLookupState() {
-                    if (!App.runtime.storage) {
-                        return null;
-                    }
-
-                    try {
-                        const parsed = JSON.parse(App.runtime.storage.getItem(App.config.ORDER_LOOKUP_STORAGE_KEY) || 'null');
-                        if (!parsed || typeof parsed !== 'object') {
-                            return null;
-                        }
-
-                        const rows = App.storage.normalizeOrderLookupRows(parsed.rows);
-                        if (rows.length === 0) {
-                            return null;
-                        }
-
-                        return {
-                            rows,
-                            fileName: String(parsed.fileName || '').trim(),
-                            filters: {
-                                query: App.helpers.normalizeComparable(parsed.filters?.query),
-                                state: App.helpers.normalizeComparable(parsed.filters?.state),
-                                route: App.helpers.normalizeComparable(parsed.filters?.route)
-                            }
-                        };
-                    } catch (error) {
-                        return null;
-                    }
-                },
-
-                persistStoredOrderLookupState({
-                    rows = App.state.orderLookupRows,
-                    fileName = App.state.orderLookupFileName,
-                    filters = App.orderLookup.getActiveFilters()
-                } = {}) {
-                    if (!App.runtime.storage) {
-                        return false;
-                    }
-
-                    try {
-                        const normalizedRows = App.storage.normalizeOrderLookupRows(rows);
-                        if (normalizedRows.length === 0) {
-                            App.storage.clearStoredOrderLookupState();
-                            return true;
-                        }
-
-                        App.runtime.storage.setItem(
-                            App.config.ORDER_LOOKUP_STORAGE_KEY,
-                            JSON.stringify({
-                                version: 1,
-                                fileName: String(fileName || '').trim(),
-                                rows: normalizedRows,
-                                filters: {
-                                    query: App.helpers.normalizeComparable(filters?.query),
-                                    state: App.helpers.normalizeComparable(filters?.state),
-                                    route: App.helpers.normalizeComparable(filters?.route)
-                                }
-                            })
-                        );
-                        return true;
-                    } catch (error) {
-                        console.error(error);
-                        return false;
-                    }
-                },
-
-                clearStoredOrderLookupState() {
-                    if (!App.runtime.storage) {
-                        return;
-                    }
-
-                    try {
-                        App.runtime.storage.removeItem(App.config.ORDER_LOOKUP_STORAGE_KEY);
-                    } catch (error) {
-                        console.error(error);
-                    }
-                },
-
-                writeEmbeddedState({
-                    documents = App.state.embeddedDocuments,
-                    users = App.state.pickerOptions,
-                    manualStatuses = App.state.manualOrderStatuses
-                } = {}) {
-                    const normalizedDocuments = App.storage.normalizeDocuments(documents);
-                    const normalizedUsers = App.helpers.normalizePickerOptions(users, []);
-                    const normalizedManualStatuses = App.storage.normalizeManualOrderStatuses(manualStatuses);
-                    const embeddedHistoryNode = document.getElementById(App.config.EMBEDDED_HISTORY_SCRIPT_ID);
-
-                    App.state.embeddedDocuments = normalizedDocuments;
-
-                    if (!embeddedHistoryNode) {
-                        return;
-                    }
-
-                    embeddedHistoryNode.textContent = JSON.stringify(
-                        {
-                            version: 2,
-                            documents: normalizedDocuments,
-                            users: normalizedUsers,
-                            manualStatuses: normalizedManualStatuses
-                        },
-                        null,
-                        0
-                    ).replace(/</g, '\\u003c');
-                },
-
-                writeEmbeddedDocuments(documents) {
-                    App.storage.writeEmbeddedState({ documents, users: App.state.pickerOptions });
-                },
-
-                writeEmbeddedPickerOptions(users) {
-                    App.storage.writeEmbeddedState({ documents: App.state.embeddedDocuments, users });
-                },
-
-                persistStoredDocuments(nextDocuments) {
-                    if (!App.runtime.storage) {
-                        return false;
-                    }
-
-                    try {
-                        const normalizedDocuments = App.storage.normalizeDocuments(nextDocuments);
-                        App.runtime.storage.setItem(App.config.STORAGE_KEY, JSON.stringify(normalizedDocuments));
-                        App.storage.writeEmbeddedDocuments(normalizedDocuments);
-                        App.state.storedDocuments = App.storage.getVisibleStoredDocuments(normalizedDocuments);
-                        App.storage.updateStorageUI();
-                        App.orderLookup.syncReferenceScopeDebounced();
-                        return true;
-                    } catch (error) {
-                        console.error(error);
-                        App.ui.showMessage(
-                            'No fue posible guardar el historial local. Revisa el espacio disponible del navegador e intenta nuevamente.',
-                            'error',
-                            { title: 'Historial' }
-                        );
-                        return false;
-                    }
-                },
-
-                getCurrentMinutes(date = new Date()) {
-                    return (date.getHours() * 60) + date.getMinutes();
-                },
-
-                isWithinStorageWindow(date = new Date()) {
-                    const currentMinutes = App.storage.getCurrentMinutes(date);
-                    return currentMinutes >= App.config.STORAGE_START_MINUTES && currentMinutes < App.config.STORAGE_END_MINUTES;
-                },
-
-                isHistoryEnabledNow(date = new Date()) {
-                    return App.storage.isWithinStorageWindow(date) || App.state.outsideHoursHistoryEnabled;
-                },
-
-                canStoreNow() {
-                    return Boolean(App.runtime.storage) && App.storage.isHistoryEnabledNow();
-                },
-
-                getDateKey(value = new Date()) {
-                    const date = new Date(value);
-                    const year = date.getFullYear();
-                    const month = String(date.getMonth() + 1).padStart(2, '0');
-                    const day = String(date.getDate()).padStart(2, '0');
-                    return `${year}-${month}-${day}`;
-                },
-
-                formatClockTime(value) {
-                    return App.runtime.clockTimeFormatter.format(new Date(value));
-                },
-
-                formatDateTime(value) {
-                    return App.runtime.dateTimeFormatter.format(new Date(value));
-                },
-
-                getNextStorageBoundary(date = new Date()) {
-                    const currentMinutes = App.storage.getCurrentMinutes(date);
-                    const boundary = new Date(date);
-
-                    if (currentMinutes < App.config.STORAGE_START_MINUTES) {
-                        boundary.setHours(
-                            Math.floor(App.config.STORAGE_START_MINUTES / 60),
-                            App.config.STORAGE_START_MINUTES % 60,
-                            0,
-                            0
-                        );
-                        return boundary;
-                    }
-
-                    if (currentMinutes < App.config.STORAGE_END_MINUTES) {
-                        boundary.setHours(
-                            Math.floor(App.config.STORAGE_END_MINUTES / 60),
-                            App.config.STORAGE_END_MINUTES % 60,
-                            0,
-                            0
-                        );
-                        return boundary;
-                    }
-
-                    boundary.setDate(boundary.getDate() + 1);
-                    boundary.setHours(
-                        Math.floor(App.config.STORAGE_START_MINUTES / 60),
-                        App.config.STORAGE_START_MINUTES % 60,
-                        0,
-                        0
-                    );
-                    return boundary;
-                },
-
-                formatBoundaryCountdown(targetDate, now = new Date()) {
-                    const diffMs = Math.max(0, targetDate.getTime() - now.getTime());
-                    const totalMinutes = Math.ceil(diffMs / 60000);
-                    const hours = Math.floor(totalMinutes / 60);
-                    const minutes = totalMinutes % 60;
-
-                    if (hours > 0) {
-                        return `${hours}h ${String(minutes).padStart(2, '0')}m`;
-                    }
-
-                    return `${Math.max(1, minutes)}m`;
-                },
-
-                buildStorageStatusMarkup(label, timeValue, meta) {
-                    return `
-                        <span class="status-pill-dot" aria-hidden="true"></span>
-                        <span class="status-pill-content">
-                            <span class="status-pill-label">${App.helpers.escapeHtml(label)}</span>
-                            <span class="status-pill-time">${App.helpers.escapeHtml(App.storage.formatClockTime(timeValue))}</span>
-                            <span class="status-pill-meta">${App.helpers.escapeHtml(meta)}</span>
-                        </span>
-                    `;
-                },
-
-                updateOutsideHoursToggleButton(now = new Date()) {
-                    const button = App.dom.outsideHoursToggleBtn;
-                    if (!button) {
-                        return;
-                    }
-
-                    const enabled = Boolean(App.runtime.storage);
-                    const insideWindow = App.storage.isWithinStorageWindow(now);
-                    const isActive = enabled && App.state.outsideHoursHistoryEnabled;
-
-                    button.disabled = !enabled;
-                    button.classList.toggle('is-active', isActive);
-                    button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
-                    button.setAttribute(
-                        'title',
-                        !enabled
-                            ? 'No disponible sin almacenamiento local'
-                            : isActive
-                                ? insideWindow
-                                    ? 'Historial fuera de horario activo para cuando cierre la franja'
-                                    : 'Desactivar historial fuera de horario'
-                                : insideWindow
-                                    ? 'Mantener historial activo tambien fuera de horario'
-                                    : 'Activar historial fuera de horario'
-                    );
-                },
-
-                toggleOutsideHoursHistory() {
-                    if (!App.runtime.storage) {
-                        return;
-                    }
-
-                    const nextValue = !App.state.outsideHoursHistoryEnabled;
-
-                    try {
-                        if (nextValue) {
-                            App.runtime.storage.setItem(App.config.OUTSIDE_HOURS_HISTORY_KEY, '1');
-                        } else {
-                            App.runtime.storage.removeItem(App.config.OUTSIDE_HOURS_HISTORY_KEY);
-                        }
-
-                        App.state.outsideHoursHistoryEnabled = nextValue;
-
-                        const localDocuments = App.storage.loadStoredDocuments();
-                        const previousVisibleDocumentIds = new Set(App.state.storedDocuments.map(documentItem => documentItem.id));
-                        App.state.storedDocuments = App.storage.getVisibleStoredDocuments(localDocuments, App.state.embeddedDocuments);
-                        const shouldHideCurrentBase = !nextValue
-                            && App.state.activeBaseRows.length > 0
-                            && App.state.activeBaseRows.every(row => previousVisibleDocumentIds.has(row.documentId))
-                            && App.state.storedDocuments.length === 0;
-
-                        if (shouldHideCurrentBase) {
-                            App.state.activeBaseRows = [];
-                            App.state.activeBaseMessage = '';
-                        }
-
-                        App.storage.updateStorageUI();
-                        App.orderLookup.syncReferenceScopeDebounced();
-
-                        if (App.dom.searchInput.value.trim()) {
-                            App.table.handleSearch();
-                        } else if (shouldHideCurrentBase) {
-                            App.table.resetWorkspaceView(false);
-                        }
-
-                        App.ui.showMessage(
-                            nextValue
-                                ? 'El historial seguira activo tambien fuera del horario.'
-                                : 'El historial fuera de horario fue desactivado.',
-                            nextValue ? 'success' : 'info',
-                            { title: 'Historial' }
-                        );
-                    } catch (error) {
-                        console.error(error);
-                        App.ui.showMessage(
-                            'No fue posible actualizar la preferencia del historial fuera de horario.',
-                            'error',
-                            { title: 'Historial' }
-                        );
-                    }
-                },
-
-                refreshStorageStatus(now = new Date()) {
-                    if (!App.dom.storageStatus) {
-                        return;
-                    }
-
-                    const hasVisibleHistory = App.state.storedDocuments.length > 0;
-                    App.storage.updateOutsideHoursToggleButton(now);
-
-                    if (!App.runtime.storage) {
-                        App.dom.storageStatus.className = 'status-pill is-disabled';
-                        App.dom.storageStatus.innerHTML = App.storage.buildStorageStatusMarkup(
-                            hasVisibleHistory ? 'Lectura' : 'Sin storage',
-                            now,
-                            hasVisibleHistory ? 'portable' : 'sin storage'
-                        );
-                        return;
-                    }
-
-                    const insideWindow = App.storage.isWithinStorageWindow(now);
-                    const outsideHoursActive = !insideWindow && App.state.outsideHoursHistoryEnabled;
-                    const nextBoundary = App.storage.getNextStorageBoundary(now);
-                    const metaText = outsideHoursActive
-                        ? '24h activo'
-                        : insideWindow
-                        ? `cierra ${App.storage.formatBoundaryCountdown(nextBoundary, now)}`
-                        : App.storage.getCurrentMinutes(now) < App.config.STORAGE_START_MINUTES
-                            ? `abre ${App.storage.formatBoundaryCountdown(nextBoundary, now)}`
-                            : `reabre ${App.storage.formatBoundaryCountdown(nextBoundary, now)}`;
-
-                    App.dom.storageStatus.className = `status-pill ${outsideHoursActive ? 'is-extended' : insideWindow ? 'is-open' : 'is-closed'}`;
-                    App.dom.storageStatus.innerHTML = App.storage.buildStorageStatusMarkup(
-                        outsideHoursActive ? '24h' : insideWindow ? 'Activo' : 'Cerrado',
-                        now,
-                        metaText
-                    );
-                },
-
-                renderHistoryPreview(documents) {
-                    const selectedIds = App.state.selectedHistoryDocumentIds;
-                    return documents
-                        .map(documentItem => {
-                            const typeSummary = App.helpers.summarizeDocumentType(documentItem.rows);
-                            return `
-                                <button
-                                    class="history-item${selectedIds.has(documentItem.id) ? ' is-selected' : ''}"
-                                    type="button"
-                                    data-history-document-id="${App.helpers.escapeHtml(documentItem.id || '')}"
-                                    aria-pressed="${selectedIds.has(documentItem.id) ? 'true' : 'false'}"
-                                    title="Haz clic para sumar o quitar este archivo de la seleccion"
-                                >
-                                    <strong>${App.helpers.escapeHtml(documentItem.sourceName || 'Documento sin nombre')}</strong>
-                                    <div class="history-type-row">
-                                        <span class="history-type-badge is-${App.helpers.escapeHtml(typeSummary.key)}">${App.helpers.escapeHtml(typeSummary.label)}</span>
-                                        <span class="history-type-meta">${App.helpers.escapeHtml(typeSummary.detail)}</span>
-                                    </div>
-                                    <span>${documentItem.rows.length} numero(s) - Picker: ${App.helpers.escapeHtml(documentItem.picker || 'sin picker')}</span>
-                                    <span>Guardado: ${App.helpers.escapeHtml(App.storage.formatDateTime(documentItem.storedAt))}</span>
-                                </button>
-                            `;
-                        })
-                        .join('');
-                },
-
-                syncSelectedHistoryDocumentIds() {
-                    const validDocumentIds = new Set(App.state.storedDocuments.map(documentItem => documentItem.id));
-                    App.state.selectedHistoryDocumentIds = new Set(
-                        Array.from(App.state.selectedHistoryDocumentIds).filter(documentId => validDocumentIds.has(documentId))
-                    );
-                },
-
-                toggleHistoryDocumentSelection(documentId) {
-                    const normalizedId = String(documentId || '').trim();
-                    if (!normalizedId) {
-                        return;
-                    }
-
-                    const availableDocuments = App.state.storedDocuments.filter(documentItem => documentItem?.id);
-                    if (!availableDocuments.some(documentItem => documentItem.id === normalizedId)) {
-                        return;
-                    }
-
-                    const nextSelectedIds = new Set(App.state.selectedHistoryDocumentIds);
-                    if (nextSelectedIds.has(normalizedId)) {
-                        nextSelectedIds.delete(normalizedId);
-                    } else {
-                        nextSelectedIds.add(normalizedId);
-                    }
-
-                    const selectedDocuments = availableDocuments.filter(documentItem => nextSelectedIds.has(documentItem.id));
-                    if (selectedDocuments.length === 0) {
-                        App.table.showStoredDocuments();
-                        return;
-                    }
-
-                    const totalRows = selectedDocuments.reduce((sum, documentItem) => sum + documentItem.rows.length, 0);
-                    App.table.setActiveBaseFromDocuments(
-                        selectedDocuments,
-                        `Mostrando ${selectedDocuments.length} archivo(s) guardado(s) seleccionado(s) con ${totalRows} numero(s).`,
-                        { selectedHistoryDocumentIds: nextSelectedIds }
-                    );
-                },
-
-                updateStorageUI() {
-                    const now = new Date();
-                    const hasVisibleHistory = App.state.storedDocuments.length > 0;
-                    App.storage.syncSelectedHistoryDocumentIds();
-                    const hasSelectedHistoryDocuments = App.state.selectedHistoryDocumentIds.size > 0;
-
-                    App.storage.refreshStorageStatus(now);
-
-                    if (!App.runtime.storage) {
-                        App.dom.storageSummary.textContent = hasVisibleHistory
-                            ? `${App.state.storedDocuments.length} documento(s) recuperado(s) desde el HTML portable.`
-                            : 'Historial local no disponible.';
-                        App.dom.storageNote.textContent = hasVisibleHistory
-                            ? 'Puedes consultar estos datos y guardar otra copia portable, pero los nuevos documentos no quedaran guardados localmente. Haz clic en uno o varios archivos guardados para ver sus pedidos.'
-                            : 'Para usar busquedas sobre documentos guardados, abre el archivo en un navegador con almacenamiento local habilitado.';
-                        App.dom.historyList.innerHTML = hasVisibleHistory
-                            ? App.storage.renderHistoryPreview(App.state.storedDocuments.slice(0, App.config.HISTORY_PREVIEW_LIMIT))
-                            : '<div class="history-empty">No se puede acceder al historial guardado desde este navegador.</div>';
-                        const showStoredLabel = 'Mostrar todo';
-                        if (App.dom.showStoredBtn) {
-                            App.dom.showStoredBtn.textContent = 'Mostrar todo';
-                            App.dom.showStoredBtn.title = showStoredLabel;
-                            App.dom.showStoredBtn.disabled = !hasVisibleHistory;
-                        }
-                        App.dom.clearStoredBtn.disabled = true;
-                        App.dom.savePortableBtn.disabled = !App.storage.canSavePortableState();
-                        return;
-                    }
-
-                    const insideWindow = App.storage.isWithinStorageWindow(now);
-                    const outsideHoursActive = !insideWindow && App.state.outsideHoursHistoryEnabled;
-
-                    if (!hasVisibleHistory) {
-                        App.dom.storageSummary.textContent = outsideHoursActive
-                            ? 'Sin documentos guardados. El modo 24h esta activo.'
-                            : 'Sin documentos guardados.';
-                        App.dom.historyList.innerHTML = '<div class="history-empty">Aun no hay documentos guardados en este navegador.</div>';
-                    } else {
-                        const latestDocument = App.state.storedDocuments[0];
-                        const totalRows = App.state.storedDocuments.reduce((sum, documentItem) => sum + documentItem.rows.length, 0);
-                        App.dom.storageSummary.textContent = `${App.state.storedDocuments.length} doc(s) · ${totalRows} num(s) · Ult.: ${App.storage.formatDateTime(latestDocument.storedAt)}.`;
-                        App.dom.historyList.innerHTML = App.storage.renderHistoryPreview(
-                            App.state.storedDocuments.slice(0, App.config.HISTORY_PREVIEW_LIMIT)
-                        );
-                    }
-
-                    App.dom.storageNote.textContent = insideWindow
-                        ? App.state.outsideHoursHistoryEnabled
-                            ? `Las cargas se guardan de ${App.config.STORAGE_WINDOW_LABEL}. El modo 24h seguira activo despues.${hasVisibleHistory ? ' Selecciona archivos guardados para ver sus pedidos.' : ''}`
-                            : `Las cargas se guardan de ${App.config.STORAGE_WINDOW_LABEL}.${hasVisibleHistory ? ' Selecciona archivos guardados para ver sus pedidos.' : ''}`
-                        : outsideHoursActive
-                            ? `Modo 24h activo. Las cargas nuevas seguiran en el historial.${hasVisibleHistory ? ' Selecciona archivos guardados para ver sus pedidos.' : ''}`
-                            : 'Fuera del horario puedes procesar, pero no se guarda en historial.';
-                    const showStoredLabel = 'Mostrar todo';
-                    if (App.dom.showStoredBtn) {
-                        App.dom.showStoredBtn.textContent = 'Mostrar todo';
-                        App.dom.showStoredBtn.title = showStoredLabel;
-                        App.dom.showStoredBtn.disabled = !hasVisibleHistory;
-                    }
-                    App.dom.clearStoredBtn.disabled = !hasVisibleHistory;
-                    App.dom.savePortableBtn.disabled = !App.storage.canSavePortableState();
-                },
-
-                pruneHistoryBySchedule() {
-                    const localDocuments = App.storage.loadStoredDocuments();
-                    App.state.storedDocuments = App.storage.getVisibleStoredDocuments(localDocuments, App.state.embeddedDocuments);
-
-                    if (!App.runtime.storage) {
-                        return;
-                    }
-
-                    const now = new Date();
-                    const todayKey = App.storage.getDateKey(now);
-                    const hasDocumentsFromAnotherDay = localDocuments.some(
-                        documentItem => App.storage.getDateKey(documentItem.storedAt) !== todayKey
-                    );
-
-                    if (!hasDocumentsFromAnotherDay) {
-                        return;
-                    }
-
-                    const removedCount = localDocuments.filter(
-                        documentItem => App.storage.getDateKey(documentItem.storedAt) !== todayKey
-                    ).length;
-                    if (removedCount > 0) {
-                        App.ui.showMessage(
-                            `Se eliminaron ${removedCount} documento(s) de dias anteriores del historial local.`,
-                            'info',
-                            { title: 'Historial' }
-                        );
-                    }
-
-                    const previousDocumentIds = new Set(localDocuments.map(documentItem => documentItem.id));
-                    const currentDayDocuments = localDocuments.filter(
-                        documentItem => App.storage.getDateKey(documentItem.storedAt) === todayKey
-                    );
-
-                    try {
-                        App.runtime.storage.setItem(App.config.STORAGE_KEY, JSON.stringify(currentDayDocuments));
-                    } catch (error) {
-                        console.error(error);
-                    }
-
-                    App.state.storedDocuments = App.storage.getVisibleStoredDocuments(currentDayDocuments, App.state.embeddedDocuments);
-                    App.storage.updateStorageUI();
-                    App.orderLookup.syncReferenceScopeDebounced();
-
-                    if (
-                        App.state.activeBaseRows.length > 0
-                        && App.state.activeBaseRows.every(row => previousDocumentIds.has(row.documentId))
-                    ) {
-                        App.table.resetWorkspaceView(false);
-                    }
-                },
-
-                updateWindowControls() {
-                    const enabled = Boolean(App.runtime.storage);
-                    App.dom.dropzone.classList.toggle('is-disabled', !enabled);
-                    App.dom.processTextBtn.disabled = !enabled;
-                    App.dom.processTextBtn.classList.toggle('is-disabled', !enabled);
-                    App.dom.dropzone.title = enabled
-                        ? 'Subir archivo .txt'
-                        : 'No se pudo habilitar el almacenamiento local del navegador.';
-                },
-
-                switchHistoryTab(name) {
-                    document.getElementById('lp-panel-historial')?.classList.add('lp-tab-panel--active');
-                    document.getElementById('lp-panel-procesados')?.classList.remove('lp-tab-panel--active');
-                },
-
-                canSavePortableState() {
-                    const allLocalDocs = App.runtime.storage
-                        ? App.storage.loadStoredDocuments()
-                        : [];
-                    return allLocalDocs.length > 0
-                        || App.state.storedDocuments.length > 0
-                        || App.users.hasCustomizedPickerOptions()
-                        || Object.keys(App.state.manualOrderStatuses || {}).length > 0;
-                },
-
-                getPortableEmbeddedState() {
-                    return JSON.stringify(
-                        { version: 2, documents: App.state.storedDocuments, users: App.state.pickerOptions },
-                        null,
-                        0
-                    ).replace(/</g, '\\u003c');
-                },
-
-                readAppStylesheetText() {
-                    const stylesheetLink = document.querySelector('link[data-app-stylesheet]');
-                    if (!stylesheetLink) {
-                        return '';
-                    }
-
-                    const appSheet = Array.from(document.styleSheets).find(sheet => sheet.href === stylesheetLink.href);
-                    if (!appSheet) {
-                        return '';
-                    }
-
-                    try {
-                        return Array.from(appSheet.cssRules).map(rule => rule.cssText).join('\n');
-                    } catch (error) {
-                        console.error(error);
-                        return '';
-                    }
-                },
-
-                buildPortableHtml() {
-                    const clone = document.documentElement.cloneNode(true);
-                    const cloneEmbeddedState = clone.querySelector(`#${App.config.EMBEDDED_HISTORY_SCRIPT_ID}`);
-                    const cloneMessageStack = clone.querySelector('#messageStack');
-                    const cloneAppScript = clone.querySelector('script[data-app-script]');
-                    const cloneStylesheetLink = clone.querySelector('link[data-app-stylesheet]');
-                    const portableStyles = App.storage.readAppStylesheetText();
-
-                    if (cloneEmbeddedState) {
-                        cloneEmbeddedState.textContent = App.storage.getPortableEmbeddedState();
-                    }
-
-                    if (cloneMessageStack) {
-                        cloneMessageStack.innerHTML = '';
-                    }
-
-                    if (cloneAppScript) {
-                        cloneAppScript.remove();
-                    }
-
-                    if (cloneStylesheetLink && portableStyles) {
-                        const inlineStyles = document.createElement('style');
-                        inlineStyles.textContent = portableStyles;
-                        cloneStylesheetLink.replaceWith(inlineStyles);
-                    }
-
-                    const portableScript = document.createElement('script');
-                    portableScript.textContent = `(${bootstrap.toString()})();`.replace(/<\/script/gi, '<\\/script');
-                    clone.querySelector('body')?.appendChild(portableScript);
-
-                    return `<!DOCTYPE html>\n${clone.outerHTML}`;
-                }
-            },
-            users: {
-                loadPickerOptions() {
-                    const storedPickerOptions = App.storage.loadStoredPickerOptions();
-                    if (storedPickerOptions.length > 0) {
-                        return storedPickerOptions;
-                    }
-
-                    const embeddedPickerOptions = App.storage.loadEmbeddedPickerOptions();
-                    if (embeddedPickerOptions.length > 0) {
-                        return embeddedPickerOptions;
-                    }
-
-                    return [...App.runtime.defaultPickerOptions];
-                },
-
-                persistPickerOptions(nextPickerOptions) {
-                    const normalizedPickerOptions = App.helpers.normalizePickerOptions(nextPickerOptions, []);
-                    if (normalizedPickerOptions.length === 0) {
-                        App.ui.showMessage('Debe quedar al menos un usuario disponible.', 'warning', { title: 'Usuarios' });
-                        return false;
-                    }
-
-                    if (App.runtime.storage) {
-                        try {
-                            App.runtime.storage.setItem(
-                                App.config.PICKERS_STORAGE_KEY,
-                                JSON.stringify(normalizedPickerOptions)
-                            );
-                        } catch (error) {
-                            console.error(error);
-                            App.ui.showMessage(
-                                'No fue posible guardar la lista de usuarios. Intenta nuevamente.',
-                                'error',
-                                { title: 'Usuarios' }
-                            );
-                            return false;
-                        }
-                    }
-
-                    App.state.pickerOptions = normalizedPickerOptions;
-                    App.users.renderPickerOptions();
-                    App.users.renderPickerManager();
-                    App.storage.writeEmbeddedPickerOptions(normalizedPickerOptions);
-                    App.storage.updateStorageUI();
-                    return true;
-                },
-
-                renderPickerOptions() {
-                    const previousValue = App.dom.pickerInput.value;
-                    App.dom.pickerInput.innerHTML = '';
-
-                    const placeholderOption = document.createElement('option');
-                    placeholderOption.value = '';
-                    placeholderOption.disabled = true;
-                    placeholderOption.textContent = 'Seleccione una opcion...';
-                    App.dom.pickerInput.appendChild(placeholderOption);
-
-                    App.state.pickerOptions.forEach(option => {
-                        const optionNode = document.createElement('option');
-                        optionNode.value = option;
-                        optionNode.textContent = option;
-                        App.dom.pickerInput.appendChild(optionNode);
-                    });
-
-                    App.dom.pickerInput.value = App.state.pickerOptions.includes(previousValue) ? previousValue : '';
-                    if (!App.dom.pickerInput.value) {
-                        App.dom.pickerInput.selectedIndex = 0;
-                    }
-
-                    App.dom.pickerMeta.textContent = `${App.state.pickerOptions.length} usuario(s) disponible(s)`;
-                },
-
-                renderPickerManager() {
-                    App.dom.pickerManagerCount.textContent = String(App.state.pickerOptions.length);
-                    App.dom.pickerListTotal.textContent = String(App.state.pickerOptions.length);
-                    App.dom.pickerList.innerHTML = App.state.pickerOptions.length === 0
-                        ? '<div class="picker-empty">No hay usuarios disponibles.</div>'
-                        : App.state.pickerOptions
-                            .map(option => `
-                                <div class="picker-row">
-                                    <div class="picker-row-main">
-                                        <span class="picker-row-badge">${App.helpers.escapeHtml(option.charAt(0).toUpperCase())}</span>
-                                        <div class="picker-row-info">
-                                            <strong>${App.helpers.escapeHtml(option)}</strong>
-                                        </div>
-                                    </div>
-                                    <button
-                                        class="btn btn-secondary picker-remove-btn"
-                                        type="button"
-                                        data-remove-picker="${App.helpers.escapeHtml(option)}"
-                                        aria-label="Eliminar ${App.helpers.escapeHtml(option)}"
-                                        title="Eliminar ${App.helpers.escapeHtml(option)}"
-                                    >X</button>
-                                </div>
-                            `)
-                            .join('');
-
-                    App.dom.manageUsersBtn.textContent = App.dom.pickerManager.hidden ? '+' : '\u2212';
-                    App.dom.manageUsersBtn.title = App.dom.pickerManager.hidden
-                        ? 'Mostrar lista de usuarios'
-                        : 'Cerrar lista de usuarios';
-                    App.dom.manageUsersBtn.setAttribute('aria-label', App.dom.manageUsersBtn.title);
-                    App.dom.manageUsersBtn.classList.toggle('is-active', !App.dom.pickerManager.hidden);
-                },
-
-                togglePickerManager(forceOpen) {
-                    const shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : App.dom.pickerManager.hidden;
-                    App.dom.pickerManager.hidden = !shouldOpen;
-                    App.users.renderPickerManager();
-
-                    if (shouldOpen) {
-                        App.dom.newPickerInput.focus();
-                    }
-                },
-
-                handleAddPicker() {
-                    const nextPickerName = App.helpers.normalizePickerName(App.dom.newPickerInput.value);
-                    if (!nextPickerName) {
-                        App.dom.newPickerInput.focus();
-                        return;
-                    }
-
-                    const alreadyExists = App.state.pickerOptions.some(
-                        option => option.toLowerCase() === nextPickerName.toLowerCase()
-                    );
-                    if (alreadyExists) {
-                        App.ui.showMessage(`El usuario "${nextPickerName}" ya existe.`, 'warning', { title: 'Usuarios' });
-                        App.dom.newPickerInput.focus();
-                        App.dom.newPickerInput.select();
-                        return;
-                    }
-
-                    if (!App.users.persistPickerOptions([...App.state.pickerOptions, nextPickerName])) {
-                        return;
-                    }
-
-                    App.dom.pickerInput.value = nextPickerName;
-                    App.dom.newPickerInput.value = '';
-                    App.users.togglePickerManager(true);
-                },
-
-                removePickerOption(optionToRemove) {
-                    const normalizedTarget = App.helpers.normalizePickerName(optionToRemove);
-                    if (!normalizedTarget) {
-                        return;
-                    }
-
-                    if (App.state.pickerOptions.length === 1) {
-                        App.ui.showMessage('No se puede eliminar el ultimo usuario disponible.', 'warning', { title: 'Usuarios' });
-                        return;
-                    }
-
-                    const confirmed = window.confirm(
-                        `Se eliminara el usuario "${normalizedTarget}" de la lista. Deseas continuar?`
-                    );
-                    if (!confirmed) {
-                        return;
-                    }
-
-                    const remainingPickerOptions = App.state.pickerOptions.filter(
-                        option => option.toLowerCase() !== normalizedTarget.toLowerCase()
-                    );
-                    if (!App.users.persistPickerOptions(remainingPickerOptions)) {
-                        return;
-                    }
-
-                    if (App.dom.pickerInput.value.toLowerCase() === normalizedTarget.toLowerCase()) {
-                        App.dom.pickerInput.value = '';
-                    }
-                },
-
-                hasCustomizedPickerOptions() {
-                    const normalizedDefaults = App.helpers.normalizePickerOptions(App.runtime.defaultPickerOptions, []);
-                    if (App.state.pickerOptions.length !== normalizedDefaults.length) {
-                        return true;
-                    }
-
-                    return App.state.pickerOptions.some((option, index) => option !== normalizedDefaults[index]);
-                }
-            },
-
-            orderLookup: {
-                getFieldDefinitions() {
-                    return App.config.ORDER_LOOKUP_FIELDS;
-                },
-
-                getSearchableFields() {
-                    return App.orderLookup.getFieldDefinitions().filter(field => field.searchable);
-                },
-
-                getVisibleColumns() {
-                    return [
-                        { key: 'dato2', label: 'DATO2' },
-                        { key: 'estado', label: 'ESTADO' },
-                        { key: 'logisticsType', label: 'RUTAS' }
-                    ];
-                },
-
-                getDefaultDisplayColumns() {
-                    return App.orderLookup.getVisibleColumns();
-                },
-
-                getReferenceOrderDescriptors() {
-                    const descriptors = [];
-                    const seen = new Set();
-
-                    App.table.getSearchableRows().forEach(row => {
-                        const orderNumber = App.helpers.normalizeComparable(row.numero);
-                        if (!orderNumber || seen.has(orderNumber)) {
-                            return;
-                        }
-
-                        seen.add(orderNumber);
-                        descriptors.push({
-                            orderNumber,
-                            logisticsType: row.type === 'flex'
-                                ? 'Flex'
-                                : row.type === 'colecta'
-                                    ? 'Colecta'
-                                    : ''
-                        });
-                    });
-
-                    return descriptors;
-                },
-
-                getReferenceOrderNumbers() {
-                    return new Set(
-                        App.orderLookup.getReferenceOrderDescriptors()
-                            .map(descriptor => descriptor.orderNumber)
-                    );
-                },
-
-                getReferenceOrderTypeMap() {
-                    return new Map(
-                        App.orderLookup.getReferenceOrderDescriptors()
-                            .filter(descriptor => descriptor.logisticsType)
-                            .map(descriptor => [descriptor.orderNumber, descriptor.logisticsType])
-                    );
-                },
-
-                rowMatchesReferenceOrders(row, referenceOrderNumbers = App.orderLookup.getReferenceOrderNumbers()) {
-                    if (!(referenceOrderNumbers instanceof Set) || referenceOrderNumbers.size === 0) {
-                        return false;
-                    }
-
-                    return App.orderLookup.getSearchableFields().some(field =>
-                        referenceOrderNumbers.has(App.helpers.normalizeComparable(row[field.key]))
-                    );
-                },
-
-                getMatchedReferenceOrderNumber(
-                    row,
-                    referenceOrderNumbers = App.orderLookup.getReferenceOrderNumbers()
-                ) {
-                    if (!row || !(referenceOrderNumbers instanceof Set) || referenceOrderNumbers.size === 0) {
-                        return '';
-                    }
-
-                    return App.orderLookup.getSearchableFields()
-                        .map(field => App.helpers.normalizeComparable(row[field.key]))
-                        .find(value => value && referenceOrderNumbers.has(value)) || '';
-                },
-
-                getMatchedExcelRows(
-                    rows = App.state.orderLookupRows,
-                    referenceOrderNumbers = App.orderLookup.getReferenceOrderNumbers(),
-                    referenceOrderTypeMap = App.orderLookup.getReferenceOrderTypeMap()
-                ) {
-                    if (!Array.isArray(rows) || rows.length === 0 || referenceOrderNumbers.size === 0) {
-                        return [];
-                    }
-
-                    return rows
-                        .filter(row => App.orderLookup.rowMatchesReferenceOrders(row, referenceOrderNumbers))
-                        .map(row => {
-                            const matchedReferenceNumber = App.orderLookup.getMatchedReferenceOrderNumber(
-                                row,
-                                referenceOrderNumbers
-                            );
-
-                            return {
-                                ...row,
-                                matchedReferenceNumber,
-                                logisticsType: App.orderLookup.resolveLogisticsType(row, referenceOrderTypeMap)
-                            };
-                        });
-                },
-
-                getMissingReferenceRows(
-                    referenceOrderDescriptors = App.orderLookup.getReferenceOrderDescriptors(),
-                    matchedRows = []
-                ) {
-                    if (!Array.isArray(referenceOrderDescriptors) || referenceOrderDescriptors.length === 0) {
-                        return [];
-                    }
-
-                    const matchedReferenceNumbers = new Set(
-                        matchedRows
-                            .map(row => App.helpers.normalizeComparable(row.matchedReferenceNumber))
-                            .filter(Boolean)
-                    );
-
-                    return referenceOrderDescriptors
-                        .filter(descriptor => !matchedReferenceNumbers.has(descriptor.orderNumber))
-                        .map(descriptor => ({
-                            dato2: descriptor.orderNumber,
-                            estado: 'N/D',
-                            logisticsType: descriptor.logisticsType,
-                            referenceNumber: descriptor.orderNumber,
-                            buyerOrder: '',
-                            orderSource: '',
-                            dispatchRoute: '',
-                            matchedReferenceNumber: descriptor.orderNumber,
-                            isMissingInWorkbook: true
-                        }));
-                },
-
-                getScopedRows(
-                    rows = App.state.orderLookupRows,
-                    referenceOrderNumbers = App.orderLookup.getReferenceOrderNumbers(),
-                    referenceOrderTypeMap = App.orderLookup.getReferenceOrderTypeMap(),
-                    referenceOrderDescriptors = App.orderLookup.getReferenceOrderDescriptors()
-                ) {
-                    if (!Array.isArray(rows) || rows.length === 0 || referenceOrderNumbers.size === 0) {
-                        return [];
-                    }
-
-                    const matchedRows = App.orderLookup.getMatchedExcelRows(
-                        rows,
-                        referenceOrderNumbers,
-                        referenceOrderTypeMap
-                    );
-                    const missingRows = App.orderLookup.getMissingReferenceRows(
-                        referenceOrderDescriptors,
-                        matchedRows
-                    );
-
-                    return [...matchedRows, ...missingRows];
-                },
-
-                getSummaryMarkup(title, body, tone = 'default') {
-                    const bodyMarkup = String(body || '').trim()
-                        ? `<span>${App.helpers.escapeHtml(body)}</span>`
-                        : '';
-
-                    return {
-                        toneClass: tone,
-                        html: `
-                            <strong>${App.helpers.escapeHtml(title)}</strong>
-                            ${bodyMarkup}
-                        `
-                    };
-                },
-
-                updateSummary(title, body, tone = 'default') {
-                    const summary = App.dom.orderLookupSummary;
-                    if (!summary) {
-                        return;
-                    }
-
-                    const { html, toneClass } = App.orderLookup.getSummaryMarkup(title, body, tone);
-                    summary.className = `order-lookup-summary${toneClass === 'default' ? '' : ` is-${toneClass}`}`;
-                    summary.classList.remove('is-hidden');
-                    summary.innerHTML = html;
-                },
-
-                hideSummary() {
-                    App.dom.orderLookupSummary?.classList.add('is-hidden');
-                },
-
-                setTableColumns(columns = App.state.orderLookupDisplayColumns) {
-                    const normalizedColumns = Array.isArray(columns) && columns.length > 0
-                        ? columns
-                        : App.orderLookup.getDefaultDisplayColumns();
-
-                    if (App.dom.orderLookupTableHead) {
-                        App.dom.orderLookupTableHead.innerHTML = `
-                            <tr>
-                                ${normalizedColumns.map(column => `
-                                    <th class="order-lookup-col order-lookup-col--${App.helpers.escapeHtml(column.key)}">${App.helpers.escapeHtml(column.label)}</th>
-                                `).join('')}
-                            </tr>
-                        `;
-                    }
-
-                    return normalizedColumns;
-                },
-
-                renderNoMatchesRow(message = 'No hay coincidencias para mostrar.') {
-                    const columns = App.orderLookup.setTableColumns(
-                        App.state.orderLookupDisplayColumns.length > 0
-                            ? App.state.orderLookupDisplayColumns
-                            : App.orderLookup.getDefaultDisplayColumns()
-                    );
-
-                    if (App.dom.orderLookupTableBody) {
-                        App.dom.orderLookupTableBody.innerHTML = `
-                            <tr>
-                                <td colspan="${columns.length}" class="order-lookup-empty-row">${App.helpers.escapeHtml(message)}</td>
-                            </tr>
-                        `;
-                    }
-
-                    if (App.dom.orderLookupTableWrap) {
-                        App.dom.orderLookupTableWrap.classList.add('is-hidden');
-                    }
-                },
-
-                resetResults() {
-                    App.state.orderLookupMatches = [];
-                    App.state.orderLookupDisplayColumns = App.orderLookup.getVisibleColumns();
-                    App.orderLookup.setTableColumns(App.state.orderLookupDisplayColumns);
-                    App.orderLookup.renderNoMatchesRow('No hay coincidencias para mostrar.');
-                    App.orderLookup.updateSummary(
-                        'Sin resultados',
-                        'Carga un archivo Excel para ver solo pedidos de Mercado Libre que coincidan con los numeros guardados o cargados y filtrarlos por estado, ruta o numero.',
-                        'empty'
-                    );
-                },
-
-                resetData() {
-                    App.state.orderLookupRows = [];
-                    App.state.orderLookupDisplayColumns = App.orderLookup.getVisibleColumns();
-                    App.state.orderLookupAvailableStates = [];
-                    App.state.orderLookupAvailableRoutes = [];
-                    App.state.orderLookupMatches = [];
-                    App.orderLookup.setLoadedFileName('');
-                    if (App.dom.orderLookupInput) {
-                        App.dom.orderLookupInput.value = '';
-                    }
-                    if (App.dom.orderLookupRouteFilter) {
-                        App.dom.orderLookupRouteFilter.value = '';
-                    }
-                    App.state.activeStatusFilter = '';
-                    if (App.dom.mainStatusFilter) {
-                        App.dom.mainStatusFilter.value = '';
-                    }
-                    App.orderLookup.populateStateFilter([]);
-                    App.orderLookup.populateRouteFilter([]);
-                    App.storage.clearStoredOrderLookupState();
-                    App.table.refreshStatusColumn();
-                },
-
-                restoreStoredState() {
-                    const storedState = App.storage.loadStoredOrderLookupState();
-                    if (!storedState) {
-                        return;
-                    }
-
-                    App.state.orderLookupRows = storedState.rows;
-                    App.state.orderLookupDisplayColumns = App.orderLookup.getVisibleColumns();
-                    App.orderLookup.setLoadedFileName(storedState.fileName || 'Consulta recuperada');
-
-                    if (App.dom.orderLookupInput) {
-                        App.dom.orderLookupInput.value = storedState.filters.query || '';
-                    }
-
-                    App.orderLookup.populateStateFilter(App.orderLookup.getScopedRows());
-                    App.orderLookup.populateRouteFilter(App.orderLookup.getScopedRows());
-
-                    if (App.dom.orderLookupStateFilter) {
-                        const normalizedState = App.helpers.normalizeComparable(storedState.filters.state);
-                        const hasStoredOption = Array.from(App.dom.orderLookupStateFilter.options)
-                            .some(option => App.helpers.normalizeComparable(option.value) === normalizedState);
-                        App.dom.orderLookupStateFilter.value = hasStoredOption ? normalizedState : '';
-                    }
-
-                    if (App.dom.orderLookupRouteFilter) {
-                        const normalizedRoute = App.helpers.normalizeComparable(storedState.filters.route);
-                        const hasStoredOption = Array.from(App.dom.orderLookupRouteFilter.options)
-                            .some(option => App.helpers.normalizeComparable(option.value) === normalizedRoute);
-                        App.dom.orderLookupRouteFilter.value = hasStoredOption ? normalizedRoute : '';
-                    }
-
-                    App.state.activeStatusFilter = App.helpers.normalizeComparable(storedState.filters.state);
-                    if (App.dom.mainStatusFilter) {
-                        App.dom.mainStatusFilter.value = App.state.activeStatusFilter;
-                    }
-
-                    App.orderLookup.applyFilters({ showWarningOnEmptySource: false });
-                    App.table.refreshStatusColumn();
-                },
-
-                setLoadedFileName(fileName) {
-                    App.state.orderLookupFileName = fileName || '';
-
-                    if (App.dom.orderLookupFileName) {
-                        App.dom.orderLookupFileName.textContent = fileName || 'No hay archivo Excel cargado.';
-                    }
-                },
-
-                populateStateFilter(rows = App.orderLookup.getScopedRows()) {
-                    const filterSelect = App.dom.orderLookupStateFilter;
-                    if (!filterSelect) {
-                        return;
-                    }
-
-                    const previousValue = App.helpers.normalizeComparable(filterSelect.value);
-                    const states = Array.from(new Set(
-                        rows
-                            .map(row => App.helpers.normalizeComparable(row.estado))
-                            .filter(Boolean)
-                    )).sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
-
-                    App.state.orderLookupAvailableStates = states;
-                    filterSelect.innerHTML = `
-                        <option value="">Todos los estados</option>
-                        ${states.map(state => `<option value="${App.helpers.escapeHtml(state)}">${App.helpers.escapeHtml(state)}</option>`).join('')}
-                    `;
-
-                    filterSelect.value = states.includes(previousValue) ? previousValue : '';
-                },
-
-                populateRouteFilter(rows = App.orderLookup.getScopedRows()) {
-                    const filterSelect = App.dom.orderLookupRouteFilter;
-                    if (!filterSelect) {
-                        return;
-                    }
-
-                    const previousValue = App.helpers.normalizeComparable(filterSelect.value);
-                    const detectedRoutes = new Set(
-                        rows
-                            .map(row => App.helpers.normalizeComparable(row.logisticsType) || App.orderLookup.resolveLogisticsType(row))
-                            .filter(Boolean)
-                    );
-                    const routes = ['Flex', 'Colecta']
-                        .filter(route => detectedRoutes.has(route))
-                        .concat(Array.from(detectedRoutes).filter(route => !['Flex', 'Colecta'].includes(route)));
-
-                    App.state.orderLookupAvailableRoutes = routes;
-                    filterSelect.innerHTML = `
-                        <option value="">Todas las rutas</option>
-                        ${routes.map(route => `<option value="${App.helpers.escapeHtml(route)}">${App.helpers.escapeHtml(route)}</option>`).join('')}
-                    `;
-
-                    filterSelect.value = routes.includes(previousValue) ? previousValue : '';
-                },
-
-                isMercadoLibreRow(row) {
-                    const orderSource = App.helpers.normalizeHeaderKey(row.orderSource);
-                    const dispatchRoute = App.helpers.normalizeHeaderKey(row.dispatchRoute);
-
-                    return orderSource.includes('MERCADOLIBRE') || dispatchRoute.includes('MERCADOLIBRE');
-                },
-
-                resolveLogisticsType(row = {}, referenceOrderTypeMap = App.orderLookup.getReferenceOrderTypeMap()) {
-                    if (referenceOrderTypeMap instanceof Map && referenceOrderTypeMap.size > 0) {
-                        const matchedReferenceOrder = App.orderLookup.getSearchableFields()
-                            .map(field => App.helpers.normalizeComparable(row[field.key]))
-                            .find(value => value && referenceOrderTypeMap.has(value));
-
-                        if (matchedReferenceOrder) {
-                            return referenceOrderTypeMap.get(matchedReferenceOrder) || '';
-                        }
-                    }
-
-                    const normalizedSignals = [
-                        row.logisticsType,
-                        row.dispatchRoute,
-                        row.orderSource,
-                        row.estado
-                    ]
-                        .map(App.helpers.normalizeHeaderKey)
-                        .filter(Boolean)
-                        .join(' ');
-
-                    if (
-                        normalizedSignals.includes('FLEX')
-                        || normalizedSignals.includes('MESA05')
-                        || normalizedSignals.includes('REVISION05')
-                    ) {
-                        return 'Flex';
-                    }
-
-                    if (
-                        normalizedSignals.includes('COLECTA')
-                        || normalizedSignals.includes('MESA03')
-                        || normalizedSignals.includes('REVISION03')
-                    ) {
-                        return 'Colecta';
-                    }
-
-                    return '';
-                },
-
-                updateReferenceScopeEmptyState(reason = 'missingReference') {
-                    const missingReference = reason === 'missingReference';
-                    const title = missingReference ? 'Sin pedidos base' : 'Sin coincidencias';
-                    const body = missingReference
-                        ? 'Primero procesa etiquetas o usa el historial guardado para tener numeros con los que comparar el Excel.'
-                        : 'El Excel cargado no contiene pedidos de Mercado Libre que coincidan con los numeros guardados o cargados actualmente.';
-                    const rowMessage = missingReference
-                        ? 'Primero carga etiquetas guardadas o pega texto para habilitar la consulta.'
-                        : 'No hay pedidos del Excel que coincidan con los numeros guardados o cargados.';
-
-                    App.state.orderLookupMatches = [];
-                    App.orderLookup.updateSummary(title, body, missingReference ? 'empty' : 'warning');
-                    App.orderLookup.renderNoMatchesRow(rowMessage);
-                },
-
-                findHeaderRowIndex(matrix) {
-                    const requiredFields  = App.orderLookup.getFieldDefinitions().filter(field => field.required);
-                    const allFields       = App.orderLookup.getFieldDefinitions();
-                    const maxScore        = allFields.length;
-                    let bestIndex         = -1;
-                    let bestScore         = -1;
-
-                    for (let rowIndex = 0; rowIndex < matrix.length; rowIndex++) {
-                        const row = matrix[rowIndex];
-                        if (!Array.isArray(row) || row.length === 0) continue;
-
-                        const normalizedRow = row.map(App.helpers.normalizeHeaderKey);
-
-                        const hasRequired = requiredFields.every(field =>
-                            normalizedRow.some(header => field.aliases.includes(header))
-                        );
-                        if (!hasRequired) continue;
-
-                        const score = allFields.reduce((total, field) =>
-                            total + (normalizedRow.some(header => field.aliases.includes(header)) ? 1 : 0), 0
-                        );
-
-                        if (score > bestScore) {
-                            bestScore = score;
-                            bestIndex = rowIndex;
-                            if (score === maxScore) break;  // puntuación perfecta, no hay mejor opción
-                        }
-                    }
-
-                    return bestIndex;
-                },
-
-                resolveColumns(headers) {
-                    return App.orderLookup.getFieldDefinitions().reduce((fieldMap, field) => {
-                        const columnIndex = headers.findIndex(header =>
-                            field.aliases.includes(App.helpers.normalizeHeaderKey(header))
-                        );
-
-                        fieldMap[field.key] = {
-                            header: columnIndex >= 0 ? headers[columnIndex] : '',
-                            index: columnIndex
-                        };
-                        return fieldMap;
-                    }, {});
-                },
-
-                extractSheetRows(sheet) {
-                    const matrix = globalThis.XLSX.utils.sheet_to_json(sheet, {
-                        header: 1,
-                        defval: '',
-                        raw: false,
-                        blankrows: false
-                    });
-                    const headerRowIndex = App.orderLookup.findHeaderRowIndex(matrix);
-
-                    if (headerRowIndex === -1) {
-                        return {
-                            rows: [],
-                            displayColumns: []
-                        };
-                    }
-
-                    const headers = matrix[headerRowIndex].map((header, index) =>
-                        App.helpers.normalizeComparable(header) || `Columna ${index + 1}`
-                    );
-                    const resolvedColumns = App.orderLookup.resolveColumns(headers);
-                    const requiredFields = App.orderLookup.getFieldDefinitions().filter(field => field.required);
-
-                    if (requiredFields.some(field => resolvedColumns[field.key].index < 0)) {
-                        return {
-                            rows: [],
-                            displayColumns: []
-                        };
-                    }
-
-                    // Convertimos cada fila a un objeto canonico para que luego sea facil
-                    // ampliar la consulta con mas columnas sin depender del encabezado original.
-                    const rows = matrix
-                        .slice(headerRowIndex + 1)
-                        .filter(row => Array.isArray(row) && row.some(cell => App.helpers.normalizeComparable(cell) !== ''))
-                        .map(row => {
-                            const item = {};
-
-                            App.orderLookup.getFieldDefinitions().forEach(field => {
-                                item[field.key] = resolvedColumns[field.key].index >= 0
-                                    ? App.helpers.normalizeComparable(row[resolvedColumns[field.key].index] ?? '')
-                                    : '';
-                            });
-
-                            item.logisticsType = App.orderLookup.resolveLogisticsType(item);
-
-                            return item;
-                        })
-                        .filter(row => (
-                            App.orderLookup.getSearchableFields().some(field => App.helpers.normalizeComparable(row[field.key]) !== '')
-                            || App.helpers.normalizeComparable(row.estado) !== ''
-                        ));
-
-                    return {
-                        rows,
-                        displayColumns: App.orderLookup.getVisibleColumns()
-                    };
-                },
-
-                extractWorkbookRows(workbook) {
-                    const workbookSheets = workbook.Workbook?.Sheets || [];
-                    const visibleSheetNames = workbook.SheetNames.filter((sheetName, index) => !workbookSheets[index]?.Hidden);
-                    const sheetNamesToRead = visibleSheetNames.length > 0 ? visibleSheetNames : workbook.SheetNames;
-
-                    const parsedWorkbook = sheetNamesToRead.reduce((accumulator, sheetName) => {
-                        const sheet = workbook.Sheets[sheetName];
-                        const { rows, displayColumns } = App.orderLookup.extractSheetRows(sheet);
-
-                        if (rows.length > 0) {
-                            accumulator.rows.push(...rows);
-                            if (displayColumns.length > accumulator.displayColumns.length) {
-                                accumulator.displayColumns = displayColumns;
-                            }
-                        }
-
-                        return accumulator;
-                    }, {
-                        rows: [],
-                        displayColumns: []
-                    });
-
-                    const mercadoLibreRows = parsedWorkbook.rows.filter(App.orderLookup.isMercadoLibreRow);
-
-                    if (parsedWorkbook.rows.length === 0) {
-                        throw new Error('El archivo Excel no contiene columnas reconocibles para numero de pedido y estado. Se buscan encabezados como DATO2 o Nro.Ref., y ESTADO o Estado Rev.');
-                    }
-
-                    if (mercadoLibreRows.length === 0) {
-                        throw new Error('El archivo Excel no contiene pedidos de Mercado Libre para mostrar.');
-                    }
-
-                    return { ...parsedWorkbook, rows: mercadoLibreRows };
-                },
-
-                renderRows(rows) {
-                    if (!App.dom.orderLookupTableBody || !App.dom.orderLookupTableWrap) {
-                        return;
-                    }
-
-                    const columns = App.orderLookup.setTableColumns(App.orderLookup.getVisibleColumns());
-                    App.dom.orderLookupTableBody.innerHTML = rows
-                        .map(row => {
-                            const isND = App.helpers.normalizeComparable(row.estado) === 'N/D';
-                            return `<tr${isND ? ' class="is-nd"' : ''}>
-                                ${columns.map(column => `
-                                    <td class="order-lookup-col order-lookup-col--${App.helpers.escapeHtml(column.key)}">
-                                        ${App.orderLookup.getCellMarkup(row, column)}
-                                    </td>
-                                `).join('')}
-                            </tr>`;
-                        })
-                        .join('');
-
-                    App.dom.orderLookupTableWrap.classList.remove('is-hidden');
-                },
-
-                getLogisticsBadgeMarkup(value) {
-                    const normalizedValue = App.helpers.normalizeComparable(value);
-                    if (!normalizedValue) {
-                        return '<span class="order-lookup-badge is-unknown">Sin definir</span>';
-                    }
-                    const toneClass = normalizedValue === 'Flex'    ? 'is-flex'
-                                    : normalizedValue === 'Colecta' ? 'is-colecta'
-                                    : 'is-unknown';
-                    return `<span class="order-lookup-badge ${toneClass}">${App.helpers.escapeHtml(normalizedValue)}</span>`;
-                },
-
-                getCellMarkup(row, column) {
-                    const rawValue = row[column.key] ?? '';
-
-                    if (column.key === 'estado') {
-                        const normalizedValue = App.helpers.normalizeComparable(rawValue) || 'Sin estado';
-                        const toneClass = normalizedValue === 'N/D'
-                            ? 'is-nd'
-                            : normalizedValue === 'Sin estado'
-                                ? 'is-empty'
-                                : '';
-
-                        return `<span class="order-lookup-state${toneClass ? ` ${toneClass}` : ''}">${App.helpers.escapeHtml(normalizedValue)}</span>`;
-                    }
-
-                    if (column.key === 'logisticsType') {
-                        return App.orderLookup.getLogisticsBadgeMarkup(rawValue);
-                    }
-
-                    return App.helpers.escapeHtml(rawValue);
-                },
-
-                getActiveFilters() {
-                    return {
-                        query: App.helpers.normalizeComparable(App.dom.orderLookupInput?.value),
-                        state: App.helpers.normalizeComparable(App.state.activeStatusFilter || App.dom.mainStatusFilter?.value || App.dom.orderLookupStateFilter?.value),
-                        route: App.helpers.normalizeComparable(App.dom.orderLookupRouteFilter?.value)
-                    };
-                },
-
-                filterRows(filters, rows = App.orderLookup.getScopedRows()) {
-                    const searchableFields = App.orderLookup.getSearchableFields();
-
-                    return rows.filter(row => {
-                        const matchesQuery = !filters.query || searchableFields.some(field =>
-                            App.helpers.normalizeComparable(row[field.key]).includes(filters.query)
-                        );
-                        const matchesState = !filters.state || App.helpers.normalizeComparable(row.estado) === filters.state;
-                        const matchesRoute = !filters.route ||
-                            App.helpers.normalizeComparable(row.logisticsType) === filters.route;
-
-                        return matchesQuery && matchesState && matchesRoute;
-                    });
-                },
-
-                buildNotFoundMessage(filters) {
-                    const criteria = [];
-
-                    if (filters.query) {
-                        criteria.push(`el pedido "${filters.query}"`);
-                    }
-
-                    if (filters.state) {
-                        criteria.push(`el estado "${filters.state}"`);
-                    }
-
-                    if (filters.route) {
-                        criteria.push(`la ruta "${filters.route}"`);
-                    }
-
-                    if (criteria.length > 0) {
-                        const criteriaLabel = criteria.length === 1
-                            ? criteria[0]
-                            : `${criteria.slice(0, -1).join(', ')} y ${criteria[criteria.length - 1]}`;
-
-                        return `No se encontraron pedidos de Mercado Libre para ${criteriaLabel}.`;
-                    }
-
-                    return 'No hay pedidos de Mercado Libre que coincidan con los numeros guardados o cargados usando los filtros actuales.';
-                },
-
-                updateNotFoundState(filters) {
-                    App.orderLookup.updateSummary(
-                        'Sin coincidencias',
-                        App.orderLookup.buildNotFoundMessage(filters),
-                        'warning'
-                    );
-                    App.orderLookup.renderNoMatchesRow('No hay pedidos de Mercado Libre que coincidan con los numeros guardados o cargados usando los filtros actuales.');
-                },
-
-                updateFoundState(matches) {
-                    const totals = matches.reduce((accumulator, row) => {
-                        const normalizedState = App.helpers.normalizeComparable(row.estado);
-                        if (normalizedState === 'N/D') {
-                            accumulator.nd += 1;
-                        } else {
-                            accumulator.withWorkbook += 1;
-                        }
-                        accumulator.total += 1;
-                        return accumulator;
-                    }, { total: 0, withWorkbook: 0, nd: 0 });
-
-                    // Actualizar badges de stats
-                    const elTotal = document.getElementById('olStatTotal');
-                    const elWith  = document.getElementById('olStatWithState');
-                    const elND    = document.getElementById('olStatND');
-                    if (elTotal) elTotal.textContent = totals.total;
-                    if (elWith)  elWith.textContent  = totals.withWorkbook;
-                    if (elND)    elND.textContent     = totals.nd;
-
-                    // Summary compacto con chips en vez de texto largo
-                    const summary = App.dom.orderLookupSummary;
-                    if (summary) {
-                        summary.className = 'order-lookup-summary';
-                        summary.innerHTML = `
-                            <strong>Consulta actualizada</strong>
-                            <div style="display:flex;gap:5px;flex-shrink:0;">
-                                ${totals.withWorkbook > 0 ? `<span class="ol-chip ol-chip--success">${totals.withWorkbook} con estado</span>` : ''}
-                                ${totals.nd > 0 ? `<span class="ol-chip ol-chip--warning">${totals.nd} N/D</span>` : ''}
-                            </div>`;
-                    }
-
-                    App.orderLookup.renderRows(matches);
-                },
-
-                async loadWorkbook(file) {
-                    if (!file) {
-                        return;
-                    }
-
-                    const MAX_MB = 15;
-                    if (file.size > MAX_MB * 1024 * 1024) {
-                        throw new Error(`El archivo es demasiado grande (${(file.size / 1024 / 1024).toFixed(1)} MB). El límite es ${MAX_MB} MB.`);
-                    }
-
-                    if (!globalThis.XLSX) {
-                        throw new Error('SheetJS no se pudo cargar correctamente. Recarga la pagina e intenta nuevamente.');
-                    }
-
-                    const buffer = await file.arrayBuffer();
-                    const workbook = globalThis.XLSX.read(buffer, { type: 'array' });
-
-                    if (!workbook.SheetNames.length) {
-                        throw new Error('El archivo Excel no contiene hojas disponibles para consultar.');
-                    }
-
-                    const { rows } = App.orderLookup.extractWorkbookRows(workbook);
-                    App.state.orderLookupRows = rows;  // ya filtrado a ML en extractWorkbookRows
-                    App.state.orderLookupDisplayColumns = App.orderLookup.getVisibleColumns();
-                    App.orderLookup.setLoadedFileName(file.name);
-                    if (App.dom.orderLookupInput) {
-                        App.dom.orderLookupInput.value = '';
-                    }
-                    if (App.dom.orderLookupStateFilter) {
-                        App.dom.orderLookupStateFilter.value = '';
-                    }
-                    if (App.dom.orderLookupRouteFilter) {
-                        App.dom.orderLookupRouteFilter.value = '';
-                    }
-                    App.state.activeStatusFilter = '';
-                    if (App.dom.mainStatusFilter) {
-                        App.dom.mainStatusFilter.value = '';
-                    }
-                    const referenceOrderDescriptors = App.orderLookup.getReferenceOrderDescriptors();
-                    const referenceOrderNumbers = new Set(
-                        referenceOrderDescriptors.map(descriptor => descriptor.orderNumber)
-                    );
-                    const referenceOrderTypeMap = new Map(
-                        referenceOrderDescriptors
-                            .filter(descriptor => descriptor.logisticsType)
-                            .map(descriptor => [descriptor.orderNumber, descriptor.logisticsType])
-                    );
-                    const matchedRows = App.orderLookup.getMatchedExcelRows(
-                        App.state.orderLookupRows,
-                        referenceOrderNumbers,
-                        referenceOrderTypeMap
-                    );
-                    const scopedRows = App.orderLookup.getScopedRows(
-                        App.state.orderLookupRows,
-                        referenceOrderNumbers,
-                        referenceOrderTypeMap,
-                        referenceOrderDescriptors
-                    );
-                    const missingRows = scopedRows.filter(row => App.helpers.normalizeComparable(row.estado) === 'N/D');
-
-                    App.orderLookup.populateStateFilter(scopedRows);
-                    App.orderLookup.populateRouteFilter(scopedRows);
-                    App.orderLookup.applyFilters({ showWarningOnEmptySource: false, scopedRows });
-                    App.table.refreshStatusColumn();
-
-                    let message = `Archivo "${file.name}" cargado correctamente. Se detectaron ${App.state.orderLookupRows.length} pedidos de Mercado Libre.`;
-                    let messageType = 'success';
-
-                    if (referenceOrderNumbers.size === 0) {
-                        message = `Archivo "${file.name}" cargado correctamente. Se detectaron ${App.state.orderLookupRows.length} pedidos de Mercado Libre, pero aun no hay pedidos guardados o cargados para compararlos.`;
-                        messageType = 'warning';
-                    } else if (matchedRows.length === 0 && missingRows.length === 0) {
-                        message = `Archivo "${file.name}" cargado correctamente. Se detectaron ${App.state.orderLookupRows.length} pedidos de Mercado Libre, pero ninguno coincide con los numeros guardados o cargados.`;
-                        messageType = 'warning';
-                    } else if (missingRows.length > 0) {
-                        message = `Archivo "${file.name}" cargado correctamente. Se detectaron ${App.state.orderLookupRows.length} pedidos de Mercado Libre, ${matchedRows.length} coinciden con los numeros guardados o cargados y ${missingRows.length} se marcaron como N/D por no aparecer en el Excel.`;
-                    } else {
-                        message = `Archivo "${file.name}" cargado correctamente. Se detectaron ${App.state.orderLookupRows.length} pedidos de Mercado Libre y ${matchedRows.length} coinciden con los numeros guardados o cargados.`;
-                    }
-
-                    App.ui.showMessage(
-                        message,
-                        messageType,
-                        { title: 'Consulta Pedido' }
-                    );
-                },
-
-                applyFilters(options = {}) {
-                    const { showWarningOnEmptySource = true, scopedRows = null } = options;
-                    if (App.state.orderLookupRows.length === 0) {
-                        if (showWarningOnEmptySource) {
-                            App.ui.showMessage('Primero debes cargar un archivo Excel para consultar pedidos.', 'warning', { title: 'Consulta Pedido' });
-                        }
-                        return;
-                    }
-
-                    const referenceOrderNumbers = App.orderLookup.getReferenceOrderNumbers();
-                    if (referenceOrderNumbers.size === 0) {
-                        App.orderLookup.populateStateFilter([]);
-                        App.orderLookup.populateRouteFilter([]);
-                        App.storage.persistStoredOrderLookupState({ filters: App.orderLookup.getActiveFilters() });
-                        App.orderLookup.updateReferenceScopeEmptyState('missingReference');
-                        return;
-                    }
-
-                    const referenceOrderTypeMap = App.orderLookup.getReferenceOrderTypeMap();
-                    const availableRows = Array.isArray(scopedRows)
-                        ? scopedRows
-                        : App.orderLookup.getScopedRows(App.state.orderLookupRows, referenceOrderNumbers, referenceOrderTypeMap);
-
-                    App.orderLookup.populateStateFilter(availableRows);
-                    App.orderLookup.populateRouteFilter(availableRows);
-                    const filters = App.orderLookup.getActiveFilters();
-
-                    // Solo persiste los filtros (no las filas) para evitar escrituras
-                    // pesadas en localStorage en cada cambio de estado/ruta.
-                    // Las filas se persisten únicamente al cargar el Excel (loadWorkbook).
-                    App.storage.persistStoredOrderLookupState({ rows: App.state.orderLookupRows, filters });
-
-                    if (availableRows.length === 0) {
-                        App.orderLookup.updateReferenceScopeEmptyState('noMatches');
-                        return;
-                    }
-
-                    const matches = App.orderLookup.filterRows(filters, availableRows)
-                        .map(row => ({
-                            ...row,
-                            dato2: App.helpers.normalizeComparable(row.dato2),
-                            estado: App.helpers.normalizeComparable(row.estado) || 'Sin estado',
-                            logisticsType: App.helpers.normalizeComparable(row.logisticsType)
-                                || App.orderLookup.resolveLogisticsType(row, referenceOrderTypeMap)
-                                || ''
-                        }));
-
-                    App.state.orderLookupMatches = matches;
-
-                    if (matches.length === 0) {
-                        App.orderLookup.updateNotFoundState(filters);
-                        return;
-                    }
-
-                    App.orderLookup.updateFoundState(matches);
-                },
-
-                clearFilters() {
-                    if (App.dom.orderLookupInput) {
-                        App.dom.orderLookupInput.value = '';
-                    }
-                    if (App.dom.orderLookupStateFilter) {
-                        App.dom.orderLookupStateFilter.value = '';
-                    }
-                    if (App.dom.orderLookupRouteFilter) {
-                        App.dom.orderLookupRouteFilter.value = '';
-                    }
-                    App.state.activeStatusFilter = '';
-                    if (App.dom.mainStatusFilter) {
-                        App.dom.mainStatusFilter.value = '';
-                    }
-                    // Restaurar todos los estados disponibles (sin filtro de ruta)
-                    App.orderLookup.populateStateFilter(App.orderLookup.getScopedRows());
-
-                    App.orderLookup.applyFilters({ showWarningOnEmptySource: false });
-                },
-
-                syncReferenceScope(options = {}) {
-                    if (App.state.orderLookupRows.length === 0) {
-                        return;
-                    }
-
-                    const scopedRows = App.orderLookup.getScopedRows();
-                    App.orderLookup.populateStateFilter(scopedRows);
-                    App.orderLookup.populateRouteFilter(scopedRows);
-                    App.orderLookup.applyFilters({
-                        showWarningOnEmptySource: false,
-                        ...options,
-                        scopedRows
-                    });
-                },
-
-                // Versión con debounce: consolida llamadas consecutivas en una sola
-                _syncDebounceTimer: null,
-                syncReferenceScopeDebounced(options = {}) {
-                    clearTimeout(App.orderLookup._syncDebounceTimer);
-                    App.orderLookup._syncDebounceTimer = setTimeout(
-                        () => App.orderLookup.syncReferenceScope({ showWarningOnEmptySource: false, ...options }),
-                        120
-                    );
-                },
-            },
-
-            table: {
-                flattenDocumentRows(documents) {
-                    return documents.flatMap(documentItem =>
-                        documentItem.rows.map((row, index) => ({
-                            ...row,
-                            documentId: documentItem.id,
-                            sourceName: documentItem.sourceName || 'Documento sin nombre',
-                            storedAt: documentItem.storedAt,
-                            storedLabel: App.storage.formatDateTime(documentItem.storedAt),
-                            viewId: `${documentItem.id}-${index}-${row.numero}`
-                        }))
-                    );
-                },
-
-                buildRawZplFromRows(rows) {
-                    return rows.map(row => row.zpl).join('\n');
-                },
-
-                getSelectedRows() {
-                    return Array.from(App.state.selectedRowsById.values());
-                },
-
-                getVisibleCheckedRows() {
-                    return Array.from(App.dom.tableBody.querySelectorAll('tr'))
-                        .filter(tr => tr.querySelector('input[type="checkbox"]')?.checked)
-                        .map(tr => App.state.extractedRows.find(row => row.viewId === tr.dataset.rowId))
-                        .filter(Boolean);
-                },
-
-                getRowsSelectedForStatusAction() {
-                    const rowsByKey = new Map();
-                    const addRow = row => {
-                        const orderNumber = App.helpers.normalizeComparable(row?.numero);
-                        const key = orderNumber || row?.viewId;
-                        if (key && !rowsByKey.has(key)) {
-                            rowsByKey.set(key, row);
-                        }
-                    };
-
-                    App.table.getSelectedRows().forEach(addRow);
-                    App.state.extractedRows
-                        .filter(row => App.state.selectedRowIds.has(row.viewId))
-                        .forEach(addRow);
-                    App.table.getVisibleCheckedRows().forEach(addRow);
-
-                    return Array.from(rowsByKey.values());
-                },
-
-                clearSelectedRows() {
-                    App.state.selectedRowIds = new Set();
-                    App.state.selectedRowsById = new Map();
-                },
-
-                setActiveBaseFromDocuments(documents, message, options = {}) {
-                    const { selectedHistoryDocumentIds = null } = options;
-                    App.state.activeBaseRows = App.table.flattenDocumentRows(documents);
-                    App.state.activeBaseMessage = message;
-                    App.state.selectedHistoryDocumentIds = selectedHistoryDocumentIds instanceof Set
-                        ? new Set(selectedHistoryDocumentIds)
-                        : Array.isArray(selectedHistoryDocumentIds)
-                            ? new Set(selectedHistoryDocumentIds)
-                            : new Set();
-                    App.dom.searchInput.value = '';
-                    App.table.renderResults(App.state.activeBaseRows, App.state.activeBaseMessage);
-                    App.storage.updateStorageUI();
-                    App.orderLookup.syncReferenceScopeDebounced();
-                },
-
-                getSearchableRows() {
-                    const combinedRows = [
-                        ...App.state.activeBaseRows,
-                        ...App.table.flattenDocumentRows(App.state.storedDocuments)
-                    ];
-                    const seen = new Set();
-
-                    return combinedRows.filter(row => {
-                        const key = `${row.documentId || 'sin-doc'}-${row.numero}-${row.zpl}`;
-                        if (seen.has(key)) {
-                            return false;
-                        }
-
-                        seen.add(key);
-                        return true;
-                    });
-                },
-
-                normalizeRowTypeFilter(filter) {
-                    return filter === 'flex' || filter === 'colecta' ? filter : 'all';
-                },
-
-                getRowTypeFilterLabel(filter = App.state.activeRowTypeFilter) {
-                    return filter === 'flex'
-                        ? 'FLEX'
-                        : filter === 'colecta'
-                            ? 'COLECTA'
-                            : 'TODOS';
-                },
-
-                getManualOrderStatus(orderNumber) {
-                    const key = App.helpers.normalizeComparable(orderNumber);
-                    return key ? App.helpers.normalizeComparable(App.state.manualOrderStatuses?.[key]?.status) : '';
-                },
-
-                isCancelledStatus(status) {
-                    return App.helpers.normalizeHeaderKey(status).includes('CANCEL');
-                },
-
-                isManualOrderCancelled(orderNumber) {
-                    return App.table.isCancelledStatus(App.table.getManualOrderStatus(orderNumber));
-                },
-
-                getOrderStatusForRow(row, options = {}) {
-                    const orderNumber = App.helpers.normalizeComparable(row?.numero);
-                    const manualStatus = options.ignoreManual
-                        ? ''
-                        : App.table.getManualOrderStatus(orderNumber);
-                    if (manualStatus) {
-                        return manualStatus;
-                    }
-
-                    if (!orderNumber || !Array.isArray(App.state.orderLookupRows) || App.state.orderLookupRows.length === 0) {
-                        return 'N/D';
-                    }
-
-                    const matchedOrder = App.state.orderLookupRows.find(lookupRow =>
-                        App.orderLookup.getSearchableFields().some(field =>
-                            App.helpers.normalizeComparable(lookupRow[field.key]) === orderNumber
-                        )
-                    );
-
-                    return App.helpers.normalizeComparable(matchedOrder?.estado) || 'N/D';
-                },
-
-                getOrderStatusClass(status) {
-                    const key = App.helpers.normalizeHeaderKey(status);
-                    if (App.table.isCancelledStatus(status)) {
-                        return 'is-cancelled';
-                    }
-
-                    if (!key || key === 'ND' || key === 'SINESTADO' || key === 'SINDEFINIR') {
-                        return 'is-nd';
-                    }
-
-                    if (
-                        key.includes('COMPLETO') ||
-                        key.includes('FINALIZADO') ||
-                        key.includes('ENTREGADO') ||
-                        key === 'OK'
-                    ) {
-                        return 'is-complete';
-                    }
-
-                    if (
-                        key.includes('DIGITACION') ||
-                        key.includes('PENDIENTE') ||
-                        key.includes('PROCESO') ||
-                        key.includes('REVISION')
-                    ) {
-                        return 'is-progress';
-                    }
-
-                    return 'is-default';
-                },
-
-                getOrderStatusMarkup(row) {
-                    const status = App.table.getOrderStatusForRow(row);
-                    const statusClass = App.table.getOrderStatusClass(status);
-                    const manualStatus = App.table.getManualOrderStatus(row?.numero);
-                    const isManual = Boolean(manualStatus);
-                    const routeLabel = row?.type
-                        ? `Etiqueta: ${String(row.type).toUpperCase()}`
-                        : 'Etiqueta sin tipo';
-                    const title = isManual
-                        ? `Estado manual: ${manualStatus}`
-                        : routeLabel;
-
-                    return `<span class="row-status-badge ${statusClass}" title="${App.helpers.escapeHtml(title)}">${App.helpers.escapeHtml(status)}</span>`;
-                },
-
-                getActiveStatusFilter() {
-                    return App.helpers.normalizeComparable(App.state.activeStatusFilter || App.dom.mainStatusFilter?.value);
-                },
-
-                updateStatusFilterOptions(rows = App.table.getRowsForActiveTypeFilter(App.state.currentResultRows)) {
-                    const filterSelect = App.dom.mainStatusFilter;
-                    if (!filterSelect) {
-                        return;
-                    }
-
-                    const previousValue = App.table.getActiveStatusFilter();
-                    const states = Array.from(new Set(
-                        rows
-                            .map(row => App.helpers.normalizeComparable(App.table.getOrderStatusForRow(row)))
-                            .filter(Boolean)
-                    )).sort((a, b) => {
-                        if (a === 'N/D') return 1;
-                        if (b === 'N/D') return -1;
-                        return a.localeCompare(b, 'es', { sensitivity: 'base' });
-                    });
-
-                    filterSelect.innerHTML = `
-                        <option value="">Estado</option>
-                        ${states.map(state => `<option value="${App.helpers.escapeHtml(state)}">${App.helpers.escapeHtml(state)}</option>`).join('')}
-                    `;
-
-                    const nextValue = states.includes(previousValue) ? previousValue : '';
-                    App.state.activeStatusFilter = nextValue;
-                    filterSelect.value = nextValue;
-
-                    if (App.dom.orderLookupStateFilter) {
-                        const hasOption = Array.from(App.dom.orderLookupStateFilter.options)
-                            .some(option => App.helpers.normalizeComparable(option.value) === nextValue);
-                        App.dom.orderLookupStateFilter.value = hasOption ? nextValue : '';
-                    }
-                },
-
-                getRowsForActiveStatusFilter(rows = []) {
-                    const filter = App.table.getActiveStatusFilter();
-                    if (!filter) {
-                        return rows;
-                    }
-
-                    return rows.filter(row => App.helpers.normalizeComparable(App.table.getOrderStatusForRow(row)) === filter);
-                },
-
-                setStatusFilter(nextStatus) {
-                    const normalizedStatus = App.helpers.normalizeComparable(nextStatus);
-                    App.state.activeStatusFilter = normalizedStatus;
-
-                    if (App.dom.mainStatusFilter) {
-                        App.dom.mainStatusFilter.value = normalizedStatus;
-                    }
-
-                    if (App.dom.orderLookupStateFilter) {
-                        const hasOption = Array.from(App.dom.orderLookupStateFilter.options)
-                            .some(option => App.helpers.normalizeComparable(option.value) === normalizedStatus);
-                        App.dom.orderLookupStateFilter.value = hasOption ? normalizedStatus : '';
-                    }
-
-                    App.table.renderCurrentResults();
-
-                    if (App.state.orderLookupRows.length > 0) {
-                        App.orderLookup.applyFilters({ showWarningOnEmptySource: false });
-                    }
-                },
-
-                refreshStatusColumn() {
-                    if (App.state.currentResultRows.length === 0) {
-                        App.table.updateStatusFilterOptions([]);
-                        return;
-                    }
-
-                    App.table.renderCurrentResults();
-                },
-
-                countRowsByType(rows = App.state.currentResultRows) {
-                    return rows.reduce((counts, row) => {
-                        if (row.type === 'flex') {
-                            counts.flex += 1;
-                        } else if (row.type === 'colecta') {
-                            counts.colecta += 1;
-                        }
-
-                        counts.total += 1;
-                        return counts;
-                    }, { flex: 0, colecta: 0, total: 0 });
-                },
-
-                getRowsForActiveTypeFilter(rows = App.state.currentResultRows) {
-                    const filter = App.table.normalizeRowTypeFilter(App.state.activeRowTypeFilter);
-                    if (filter === 'all') {
-                        return rows;
-                    }
-
-                    return rows.filter(row => row.type === filter);
-                },
-
-                buildResultsMetaMessage(metaMessage, sourceRows, visibleRows, typeRows = sourceRows) {
-                    const typeFilter = App.table.normalizeRowTypeFilter(App.state.activeRowTypeFilter);
-                    const statusFilter = App.table.getActiveStatusFilter();
-                    const filterMessages = [];
-
-                    if (typeFilter !== 'all' && sourceRows.length > 0) {
-                        filterMessages.push(`${App.table.getRowTypeFilterLabel(typeFilter)} (${typeRows.length} de ${sourceRows.length})`);
-                    }
-
-                    if (statusFilter && typeRows.length > 0) {
-                        filterMessages.push(`Estado ${statusFilter} (${visibleRows.length} de ${typeRows.length})`);
-                    }
-
-                    if (filterMessages.length === 0) {
-                        return metaMessage;
-                    }
-
-                    const filterMessage = `Filtro activo: ${filterMessages.join(' · ')}.`;
-                    return metaMessage ? `${metaMessage} ${filterMessage}` : filterMessage;
-                },
-
-                updateTypeFilterButtons(counts = App.table.countRowsByType()) {
-                    const filter = App.table.normalizeRowTypeFilter(App.state.activeRowTypeFilter);
-                    const buttonDefinitions = [
-                        { button: App.dom.flexStatBtn, filter: 'flex', count: counts.flex },
-                        { button: App.dom.colectaStatBtn, filter: 'colecta', count: counts.colecta },
-                        { button: App.dom.totalStatBtn, filter: 'all', count: counts.total }
-                    ];
-
-                    buttonDefinitions.forEach(({ button, filter: buttonFilter, count }) => {
-                        if (!button) {
-                            return;
-                        }
-
-                        const isActive = filter === buttonFilter;
-                        const shouldDim = filter !== 'all' && buttonFilter !== filter && count > 0;
-
-                        button.classList.toggle('is-active', isActive);
-                        button.classList.toggle('is-dimmed', shouldDim);
-                        button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
-                    });
-                },
-
-                setRowTypeFilter(nextFilter) {
-                    try {
-                        if (typeof DriveSync !== 'undefined' && DriveSync?.showLabelSource) {
-                            DriveSync.showLabelSource('mercadolibre');
-                        }
-                    } catch (error) {
-                        console.warn('[App] No se pudo volver a Mercado Libre:', error);
-                    }
-
-                    if (App.state.currentResultRows.length === 0 && !App.state.currentResultMessage) {
-                        return;
-                    }
-
-                    const normalizedFilter = App.table.normalizeRowTypeFilter(nextFilter);
-                    App.state.activeRowTypeFilter = normalizedFilter === App.state.activeRowTypeFilter
-                        ? 'all'
-                        : normalizedFilter;
-                    App.table.renderCurrentResults();
-                },
-
-                updateSelectionState() {
-                    const rows = App.dom.tableBody.querySelectorAll('tr');
-
-                    rows.forEach(tr => {
-                        const rowId = tr.dataset.rowId;
-                        const isSelected = App.state.selectedRowIds.has(rowId);
-                        tr.classList.toggle('is-selected', isSelected);
-
-                        const checkbox = tr.querySelector('input[type="checkbox"]');
-                        if (checkbox) {
-                            checkbox.checked = isSelected;
-                        }
-                    });
-
-                    const selectedRows = App.table.getRowsSelectedForStatusAction();
-                    const visibleSelectedCount = App.state.extractedRows.filter(
-                        row => App.state.selectedRowIds.has(row.viewId)
-                    ).length;
-                    if (App.dom.cancelOrderBtn) {
-                        App.dom.cancelOrderBtn.disabled = selectedRows.length === 0;
-                    }
-
-                    if (selectedRows.length === 0) {
-                        App.dom.selectedInfo.textContent = App.defaults.selectionMessage;
-                        App.dom.printZebraBtn.disabled = App.state.extractedRows.length === 0;
-                        return;
-                    }
-
-                    if (selectedRows.length === 1) {
-                        const selectedRow = selectedRows[0];
-                        App.dom.selectedInfo.textContent = visibleSelectedCount === 0
-                            ? `1 bulto seleccionado: ${selectedRow.numero} (fuera del filtro actual).`
-                            : `1 bulto seleccionado: ${selectedRow.numero}`;
-                        App.dom.printZebraBtn.disabled = false;
-                        return;
-                    }
-
-                    const hiddenSelectedCount = selectedRows.length - visibleSelectedCount;
-                    App.dom.selectedInfo.textContent = hiddenSelectedCount > 0
-                        ? `${selectedRows.length} bultos seleccionados (${hiddenSelectedCount} fuera del filtro actual).`
-                        : `${selectedRows.length} bultos seleccionados para impresion.`;
-                    App.dom.printZebraBtn.disabled = false;
-                },
-
-                toggleRowSelection(row, forceSelected) {
-                    if (!row || !row.viewId) {
-                        return;
-                    }
-
-                    const shouldSelect = typeof forceSelected === 'boolean'
-                        ? forceSelected
-                        : !App.state.selectedRowIds.has(row.viewId);
-
-                    if (shouldSelect) {
-                        App.state.selectedRowIds.add(row.viewId);
-                        App.state.selectedRowsById.set(row.viewId, row);
-                    } else {
-                        App.state.selectedRowIds.delete(row.viewId);
-                        App.state.selectedRowsById.delete(row.viewId);
-                    }
-
-                    App.table.updateSelectionState();
-                },
-
-                markSelectedRowsAsCancelled() {
-                    const selectedRows = App.table.getRowsSelectedForStatusAction();
-                    if (selectedRows.length === 0) {
-                        App.ui.showMessage(
-                            'Selecciona uno o mas pedidos para marcarlos como cancelados.',
-                            'warning',
-                            { title: 'Pedido cancelado' }
-                        );
-                        return;
-                    }
-
-                    const nextStatuses = { ...App.state.manualOrderStatuses };
-                    const updatedAt = new Date().toISOString();
-                    const processedOrders = new Set();
-                    let cancelledCount = 0;
-                    let restoredCount = 0;
-
-                    selectedRows.forEach(row => {
-                        const orderNumber = App.helpers.normalizeComparable(row?.numero);
-                        if (!orderNumber || processedOrders.has(orderNumber)) {
-                            return;
-                        }
-                        processedOrders.add(orderNumber);
-
-                        const currentStatus = App.table.getOrderStatusForRow(row);
-                        if (App.table.isCancelledStatus(currentStatus)) {
-                            const originalStatus = App.table.getOrderStatusForRow(row, { ignoreManual: true });
-                            if (App.table.isCancelledStatus(originalStatus)) {
-                                nextStatuses[orderNumber] = {
-                                    status: 'N/D',
-                                    updatedAt
-                                };
-                            } else {
-                                delete nextStatuses[orderNumber];
-                            }
-                            restoredCount += 1;
-                        } else {
-                            nextStatuses[orderNumber] = {
-                                status: 'PEDIDO CANCELADO',
-                                updatedAt
-                            };
-                            cancelledCount += 1;
-                        }
-                    });
-
-                    if (cancelledCount === 0 && restoredCount === 0) {
-                        App.ui.showMessage(
-                            'No se encontraron numeros validos para actualizar.',
-                            'warning',
-                            { title: 'Pedido cancelado' }
-                        );
-                        return;
-                    }
-
-                    if (!App.storage.persistManualOrderStatuses(nextStatuses)) {
-                        return;
-                    }
-
-                    App.table.renderCurrentResults();
-                    if (App.state.orderLookupRows.length > 0) {
-                        App.orderLookup.applyFilters({ showWarningOnEmptySource: false });
-                    }
-
-                    const parts = [];
-                    if (cancelledCount > 0) {
-                        parts.push(`${cancelledCount} pedido(s) marcado(s) como PEDIDO CANCELADO`);
-                    }
-                    if (restoredCount > 0) {
-                        parts.push(`${restoredCount} pedido(s) restaurado(s)`);
-                    }
-
-                    App.ui.showMessage(`${parts.join(' y ')}.`, 'success', { title: 'Pedido cancelado' });
-                },
-
-                renderResults(rows, metaMessage) {
-                    App.state.currentResultRows = Array.isArray(rows) ? [...rows] : [];
-                    App.state.currentResultMessage = metaMessage || '';
-                    App.table.renderCurrentResults();
-                },
-
-                renderCurrentResults() {
-                    const sourceRows = App.state.currentResultRows.map((row, index) => ({
-                        ...row,
-                        viewId: row.viewId || `view-${index}-${row.numero}`
-                    }));
-                    const counts = App.table.countRowsByType(sourceRows);
-                    const typeRows = App.table.getRowsForActiveTypeFilter(sourceRows);
-                    App.table.updateStatusFilterOptions(typeRows);
-                    const visibleRows = App.table.getRowsForActiveStatusFilter(typeRows);
-                    const activeFilter = App.table.normalizeRowTypeFilter(App.state.activeRowTypeFilter);
-                    const hasActiveTypeFilter = activeFilter !== 'all';
-                    const activeStatusFilter = App.table.getActiveStatusFilter();
-                    const hasActiveStatusFilter = activeStatusFilter !== '';
-
-                    App.state.extractedRows = visibleRows;
-                    App.state.rawZplData = App.table.buildRawZplFromRows(App.state.extractedRows);
-                    App.dom.tableBody.innerHTML = '';
-
-                    App.state.extractedRows.forEach(row => {
-                        if (App.state.selectedRowIds.has(row.viewId)) {
-                            App.state.selectedRowsById.set(row.viewId, row);
-                        }
-                    });
-
-                    App.state.extractedRows.forEach(row => {
-                        const tr = document.createElement('tr');
-                        tr.dataset.rowId = row.viewId;
-                        tr.innerHTML = `
-                            <td><input class="row-selector" type="checkbox" aria-label="Seleccionar ${App.helpers.escapeHtml(row.numero)}"></td>
-                            <td>${App.helpers.escapeHtml(row.proceso)}</td>
-                            <td><strong>${App.helpers.escapeHtml(row.numero)}</strong></td>
-                            <td>${App.helpers.escapeHtml(row.picker)}</td>
-                            <td>${App.helpers.escapeHtml(row.picking)}</td>
-                            <td><span style="color: ${row.type === 'flex' ? 'var(--primary)' : 'var(--success)'}">${App.helpers.escapeHtml(row.revision)}</span></td>
-                            <td>
-                                <div class="meta-cell">
-                                    <strong>${App.helpers.escapeHtml(row.storedLabel || 'Carga actual')}</strong>
-                                    <span>${App.helpers.escapeHtml(row.sourceName || 'Documento actual')}</span>
-                                </div>
-                            </td>
-                            <td>${App.table.getOrderStatusMarkup(row)}</td>
-                        `;
-
-                        tr.addEventListener('click', () => {
-                            App.table.toggleRowSelection(row);
-                        });
-
-                        const checkbox = tr.querySelector('input[type="checkbox"]');
-                        checkbox.addEventListener('click', event => {
-                            event.stopPropagation();
-                            App.table.toggleRowSelection(row, checkbox.checked);
-                        });
-
-                        App.dom.tableBody.appendChild(tr);
-                    });
-
-                    App.dom.countFlex.textContent = String(counts.flex);
-                    App.dom.countColecta.textContent = String(counts.colecta);
-                    App.dom.countTotal.textContent = String(counts.total);
-                    App.table.updateTypeFilterButtons(counts);
-
-                    App.ui.setResultsVisible(true);
-                    App.ui.setClearButtonVisible(true);
-                    App.ui.updateResultsMeta(
-                        App.table.buildResultsMetaMessage(
-                            App.state.currentResultMessage,
-                            sourceRows,
-                            App.state.extractedRows,
-                            typeRows
-                        )
-                    );
-
-                    if (App.state.extractedRows.length === 0) {
-                        App.table.resetActionButtons(true);
-                        App.table.updateSelectionState();
-                        if (App.state.selectedRowsById.size === 0) {
-                            App.dom.selectedInfo.textContent = hasActiveTypeFilter && hasActiveStatusFilter
-                                ? `No se encontraron bultos ${App.table.getRowTypeFilterLabel(activeFilter)} con estado ${activeStatusFilter}.`
-                                : hasActiveStatusFilter
-                                    ? `No se encontraron pedidos con estado ${activeStatusFilter}.`
-                                    : hasActiveTypeFilter
-                                        ? `No se encontraron bultos ${App.table.getRowTypeFilterLabel(activeFilter)} para mostrar.`
-                                        : 'No se encontraron numeros para mostrar.';
-                        }
-                        return;
-                    }
-
-                    App.dom.downloadBtn.disabled = false;
-                    App.dom.printZebraBtn.disabled = false;
-                    App.dom.downloadBtn.innerHTML = App.table.getDownloadButtonMarkup();
-                    App.table.updateSelectionState();
-                },
-
-                resetWorkspaceView(resetInputs) {
-                    App.state.activeBaseRows = [];
-                    App.state.activeBaseMessage = '';
-                    App.state.currentResultRows = [];
-                    App.state.currentResultMessage = '';
-                    App.state.activeRowTypeFilter = 'all';
-                    App.state.activeStatusFilter = '';
-                    App.state.selectedHistoryDocumentIds = new Set();
-                    App.state.extractedRows = [];
-                    App.state.rawZplData = '';
-                    App.table.clearSelectedRows();
-                    App.dom.tableBody.innerHTML = '';
-                    App.dom.countFlex.textContent = '0';
-                    App.dom.countColecta.textContent = '0';
-                    App.dom.countTotal.textContent = '0';
-                    App.table.updateTypeFilterButtons({ flex: 0, colecta: 0, total: 0 });
-                    App.table.updateStatusFilterOptions([]);
-                    App.ui.setResultsVisible(false);
-                    App.ui.setClearButtonVisible(false);
-                    App.dom.searchInput.value = '';
-                    if (App.dom.mainStatusFilter) {
-                        App.dom.mainStatusFilter.value = '';
-                    }
-                    App.dom.selectedInfo.textContent = App.defaults.selectionMessage;
-                    App.ui.updateResultsMeta(App.defaults.emptyResultsMessage);
-                    App.table.resetActionButtons();
-
-                    if (resetInputs) {
-                        App.dom.fileInput.value = '';
-                        App.dom.textInput.value = '';
-                        App.dom.pickerInput.value = '';
-                    }
-
-                    App.storage.updateStorageUI();
-                    App.orderLookup.syncReferenceScopeDebounced();
-                },
-
-                getDownloadButtonMarkup() {
-                    return '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg> Descargar CSV';
-                },
-
-                resetActionButtons(emptyState = false) {
-                    App.dom.downloadBtn.disabled = true;
-                    App.dom.printZebraBtn.disabled = App.state.extractedRows.length === 0 && App.state.selectedRowsById.size === 0;
-                    if (App.dom.cancelOrderBtn) {
-                        App.dom.cancelOrderBtn.disabled = App.state.selectedRowsById.size === 0;
-                    }
-                    App.dom.downloadBtn.innerHTML = emptyState
-                        ? 'No se encontraron numeros'
-                        : App.table.getDownloadButtonMarkup();
-                },
-
-                downloadCSV(data, filename) {
-                    if (data.length === 0) {
-                        return;
-                    }
-
-                    let csvContent = 'Proceso;NUMERO;PICKER;PICKING;REVISION\r\n';
-                    data.forEach(row => {
-                        csvContent += `${row.proceso};${row.numero};${row.picker};${row.picking};${row.revision}\r\n`;
-                    });
-
-                    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-                    const url = URL.createObjectURL(blob);
-                    const link = document.createElement('a');
-                    link.setAttribute('href', url);
-                    link.setAttribute('download', filename);
-                    document.body.appendChild(link);
-                    link.click();
-                    document.body.removeChild(link);
-                    URL.revokeObjectURL(url);
-                },
-
-                handleSearch() {
-                    const query = App.dom.searchInput.value.trim().toLowerCase();
-
-                    if (!query) {
-                        if (App.state.activeBaseRows.length === 0) {
-                            if (App.state.selectedRowsById.size > 0) {
-                                App.table.renderResults(
-                                    [],
-                                    'La seleccion actual se conserva. Realiza otra busqueda para seguir agregando bultos.'
-                                );
-                                return;
-                            }
-
-                            App.table.resetWorkspaceView(false);
-                            return;
-                        }
-
-                        App.table.renderResults(
-                            App.state.activeBaseRows,
-                            App.state.activeBaseMessage || 'Mostrando la ultima carga procesada.'
-                        );
-                        return;
-                    }
-
-                    const matchedRows = App.table.getSearchableRows().filter(
-                        row => row.numero.toLowerCase().includes(query)
-                    );
-
-                    if (matchedRows.length === 0) {
-                        App.table.renderResults(
-                            [],
-                            `No se encontraron coincidencias guardadas para "${App.dom.searchInput.value.trim()}".`
-                        );
-                        return;
-                    }
-
-                    const documentCount = new Set(matchedRows.map(row => row.documentId)).size;
-                    App.table.renderResults(
-                        matchedRows,
-                        `Mostrando ${matchedRows.length} coincidencia(s) encontradas en ${documentCount} documento(s) guardado(s).`
-                    );
-                },
-
-                showStoredDocuments() {
-                    if (App.state.storedDocuments.length === 0) {
-                        App.ui.showMessage('Todavia no hay documentos guardados para mostrar.', 'info', { title: 'Historial' });
-                        return;
-                    }
-
-                    App.table.setActiveBaseFromDocuments(
-                        App.state.storedDocuments,
-                        `Mostrando ${App.state.storedDocuments.length} documento(s) guardado(s) en el historial local.`
-                    );
-                },
-
-                handleShowStoredAction() {
-                    App.table.showStoredDocuments();
-                }
-            },
-            actions: {
-                preventDefaults(event) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                },
-
-                validateProcessingReady(actionLabel) {
-                    if (!App.runtime.storage) {
-                        App.ui.showMessage(
-                            'No fue posible habilitar el historial local del navegador. Sin ese historial no se puede guardar ni buscar documentos previos.',
-                            'error',
-                            { title: 'Historial' }
-                        );
-                        return false;
-                    }
-
-                    if (!App.dom.pickerInput.value.trim()) {
-                        App.ui.showMessage(
-                            `Por favor, selecciona un usuario antes de ${actionLabel}.`,
-                            'warning',
-                            { title: 'Usuario' }
-                        );
-                        App.dom.pickerInput.focus();
-                        return false;
-                    }
-
-                    return true;
-                },
-
-                appendDocumentsToHistory(documents) {
-                    const nextDocuments = [...documents, ...App.state.storedDocuments].sort(
-                        (a, b) => new Date(b.storedAt) - new Date(a.storedAt)
-                    );
-
-                    return App.storage.persistStoredDocuments(nextDocuments);
-                },
-
-                restoreStoredDocumentsOnOpen() {
-                    if (App.state.storedDocuments.length === 0) {
-                        return;
-                    }
-
-                    App.table.setActiveBaseFromDocuments(
-                        App.state.storedDocuments,
-                        `Historial recuperado automaticamente al abrir el archivo (${App.state.storedDocuments.length} documento(s) disponibles).`
-                    );
-                },
-
-                async handleDrop(event) {
-                    const dataTransfer = event.dataTransfer;
-                    if (!dataTransfer) {
-                        return;
-                    }
-
-                    await App.actions.handleFiles(dataTransfer.files);
-                },
-
-                async handlePastedText() {
-                    if (!App.actions.validateProcessingReady('procesar el texto')) {
-                        return;
-                    }
-
-                    const text = App.dom.textInput.value.trim();
-                    if (!text) {
-                        App.ui.showMessage('Por favor, pega el contenido del archivo en el area de texto.', 'warning', { title: 'Texto' });
-                        App.dom.textInput.focus();
-                        return;
-                    }
-
-                    const picker = App.dom.pickerInput.value.trim();
-                    const shouldPersist = App.storage.canStoreNow();
-                    const documentRecord = App.parser.createDocumentRecord({
-                        picker,
-                        sourceName: `Texto pegado ${App.storage.formatDateTime(new Date())}`,
-                        sourceType: 'text',
-                        text
-                    });
-
-                    if (!documentRecord) {
-                        App.ui.showMessage('No se encontraron numeros validos dentro del texto pegado.', 'warning', { title: 'Texto' });
-                        return;
-                    }
-
-                    if (shouldPersist && !App.actions.appendDocumentsToHistory([documentRecord])) {
-                        return;
-                    }
-
-                    App.dom.fileInput.value = '';
-                    App.dom.textInput.value = '';
-                    App.table.setActiveBaseFromDocuments(
-                        [documentRecord],
-                        shouldPersist
-                            ? `Mostrando 1 documento recien guardado (${documentRecord.rows.length} numero(s)).`
-                            : `Mostrando 1 documento procesado (${documentRecord.rows.length} numero(s)). Fuera del horario de historial, por eso no se guardo.`
-                    );
-                },
-
-                async handleFiles(files) {
-                    if (!App.actions.validateProcessingReady('cargar archivos')) {
-                        App.dom.fileInput.value = '';
-                        return;
-                    }
-
-                    const txtFiles = Array.from(files || []).filter(
-                        file => file.name.toLowerCase().endsWith('.txt')
-                    );
-
-                    if (txtFiles.length === 0) {
-                        App.ui.showMessage('Solo se admiten archivos .txt de MercadoLibre.', 'warning', { title: 'Archivos' });
-                        App.dom.fileInput.value = '';
-                        return;
-                    }
-
-                    const picker = App.dom.pickerInput.value.trim();
-                    const shouldPersist = App.storage.canStoreNow();
-                    const newDocuments = [];
-                    const knownFingerprints = new Set(
-                        App.state.storedDocuments
-                            .map(documentItem => App.parser.getDocumentFingerprint(documentItem))
-                            .filter(Boolean)
-                    );
-                    const duplicateFiles = [];
-
-                    for (const file of txtFiles) {
-                        const text = await App.parser.readFileAsText(file);
-                        const documentRecord = App.parser.createDocumentRecord({
-                            picker,
-                            sourceName: file.name,
-                            sourceType: 'file',
-                            text
-                        });
-
-                        if (!documentRecord) {
-                            App.ui.showMessage(
-                                `No se encontraron numeros validos en el archivo "${file.name}".`,
-                                'warning',
-                                { title: 'Archivos' }
-                            );
-                            App.dom.fileInput.value = '';
-                            return;
-                        }
-
-                        if (documentRecord.fingerprint && knownFingerprints.has(documentRecord.fingerprint)) {
-                            duplicateFiles.push(file.name);
-                            continue;
-                        }
-
-                        if (documentRecord.fingerprint) {
-                            knownFingerprints.add(documentRecord.fingerprint);
-                        }
-
-                        newDocuments.push(documentRecord);
-                    }
-
-                    if (newDocuments.length === 0) {
-                        if (duplicateFiles.length > 0) {
-                            App.ui.showMessage(
-                                App.parser.buildDuplicateFilesMessage(duplicateFiles),
-                                'warning',
-                                { title: 'Archivos duplicados', timeout: 9000 }
-                            );
-                        }
-
-                        App.dom.fileInput.value = '';
-                        return;
-                    }
-
-                    if (shouldPersist && !App.actions.appendDocumentsToHistory(newDocuments)) {
-                        App.dom.fileInput.value = '';
-                        return;
-                    }
-
-                    App.dom.textInput.value = '';
-                    App.dom.fileInput.value = '';
-
-                    const duplicateMessage = duplicateFiles.length > 0
-                        ? ` Se omitieron ${duplicateFiles.length} archivo(s) ya guardado(s).`
-                        : '';
-
-                    App.table.setActiveBaseFromDocuments(
-                        newDocuments,
-                        shouldPersist
-                            ? `Mostrando ${newDocuments.length} documento(s) recien guardado(s) con ${newDocuments.reduce((sum, documentItem) => sum + documentItem.rows.length, 0)} numero(s).${duplicateMessage}`
-                            : `Mostrando ${newDocuments.length} documento(s) procesado(s) con ${newDocuments.reduce((sum, documentItem) => sum + documentItem.rows.length, 0)} numero(s). Fuera del horario de historial, por eso no se guardaron.${duplicateMessage}`
-                    );
-
-                    if (duplicateFiles.length > 0) {
-                        App.ui.showMessage(
-                            App.parser.buildDuplicateFilesMessage(duplicateFiles),
-                            'warning',
-                            { title: 'Archivos duplicados', timeout: 9000 }
-                        );
-                    }
-                },
-
-                clearStoredHistory() {
-                    if (!App.runtime.storage || App.state.storedDocuments.length === 0) {
-                        return;
-                    }
-
-                    const btn = App.dom.clearStoredBtn;
-                    if (!btn) return;
-
-                    if (btn.dataset.confirmPending !== '1') {
-                        btn.dataset.confirmPending = '1';
-                        const originalText = btn.textContent;
-                        btn.textContent = '¿Confirmar?';
-                        btn.classList.add('is-danger');
-                        btn._confirmTimer = setTimeout(() => {
-                            btn.dataset.confirmPending = '';
-                            btn.textContent = originalText;
-                            btn.classList.remove('is-danger');
-                        }, 4000);
-                        return;
-                    }
-
-                    clearTimeout(btn._confirmTimer);
-                    btn.dataset.confirmPending = '';
-                    btn.textContent = 'Limpiar historial';
-                    btn.classList.remove('is-danger');
-
-                    if (!App.storage.persistStoredDocuments([])) {
-                        return;
-                    }
-
-                    App.state.activeBaseRows = [];
-                    App.state.activeBaseMessage = '';
-
-                    if (App.dom.searchInput.value.trim()) {
-                        App.table.renderResults([], 'El historial fue limpiado. No hay coincidencias para mostrar.');
-                        return;
-                    }
-
-                    App.table.resetWorkspaceView(false);
-                },
-
-                async handlePortableSave() {
-                    if (!App.storage.canSavePortableState()) {
-                        App.ui.showMessage(
-                            'No hay historial ni usuarios personalizados para guardar dentro del HTML portable.',
-                            'info',
-                            { title: 'Portable' }
-                        );
-                        return;
-                    }
-
-                    App.storage.writeEmbeddedState({
-                        documents: App.state.storedDocuments,
-                        users: App.state.pickerOptions,
-                        manualStatuses: App.state.manualOrderStatuses
-                    });
-
-                    const portableHtml = App.storage.buildPortableHtml();
-                    const timestamp = new Date();
-                    const filename = `${App.config.PORTABLE_FILENAME_PREFIX}-${timestamp.getFullYear()}-${String(timestamp.getMonth() + 1).padStart(2, '0')}-${String(timestamp.getDate()).padStart(2, '0')}-${String(timestamp.getHours()).padStart(2, '0')}${String(timestamp.getMinutes()).padStart(2, '0')}.html`;
-
-                    if (window.showSaveFilePicker) {
-                        try {
-                            const fileHandle = await window.showSaveFilePicker({
-                                suggestedName: filename,
-                                types: [
-                                    {
-                                        description: 'Archivo HTML',
-                                        accept: {
-                                            'text/html': ['.html']
-                                        }
-                                    }
-                                ]
-                            });
-                            const writable = await fileHandle.createWritable();
-                            await writable.write(portableHtml);
-                            await writable.close();
-                            App.ui.showMessage(
-                                'Se guardo una copia portable del HTML con el historial y los usuarios actuales.',
-                                'success',
-                                { title: 'Portable' }
-                            );
-                            return;
-                        } catch (error) {
-                            if (error && error.name === 'AbortError') {
-                                return;
-                            }
-
-                            App.ui.reportError(error, 'No fue posible guardar la copia portable.', 'Portable');
-                            return;
-                        }
-                    }
-
-                    const blob = new Blob([portableHtml], { type: 'text/html;charset=utf-8;' });
-                    const url = URL.createObjectURL(blob);
-                    const link = document.createElement('a');
-                    link.setAttribute('href', url);
-                    link.setAttribute('download', filename);
-                    document.body.appendChild(link);
-                    link.click();
-                    document.body.removeChild(link);
-                    URL.revokeObjectURL(url);
-                    App.ui.showMessage(
-                        'Se descargo una copia portable del HTML con el historial y los usuarios actuales.',
-                        'success',
-                        { title: 'Portable' }
-                    );
-                },
-
-                handleCsvDownload() {
-                    if (App.state.extractedRows.length === 0) {
-                        return;
-                    }
-
-                    const flexData = App.state.extractedRows.filter(row => row.type === 'flex');
-                    const colectaData = App.state.extractedRows.filter(row => row.type === 'colecta');
-
-                    if (flexData.length > 0) {
-                        App.table.downloadCSV(flexData, '1 f.csv');
-                    }
-                    if (colectaData.length > 0) {
-                        window.setTimeout(() => {
-                            App.table.downloadCSV(colectaData, '1 c.csv');
-                        }, 300);
-                    }
-                },
-
-                loadZebraPrinterPreference() {
-                    if (!App.runtime.storage) {
-                        return 'default';
-                    }
-
-                    try {
-                        return App.helpers.normalizeZebraPrinterKey(
-                            App.runtime.storage.getItem(App.config.ZEBRA_PRINTER_STORAGE_KEY)
-                        );
-                    } catch (error) {
-                        return 'default';
-                    }
-                },
-
-                persistZebraPrinterPreference(key) {
-                    if (!App.runtime.storage) {
-                        return;
-                    }
-
-                    try {
-                        App.runtime.storage.setItem(
-                            App.config.ZEBRA_PRINTER_STORAGE_KEY,
-                            App.helpers.normalizeZebraPrinterKey(key)
-                        );
-                    } catch (error) {
-                        // Ignore storage failures; printing can still continue.
-                    }
-                },
-
-                getSelectedZebraPrinterConfig() {
-                    const key = App.helpers.normalizeZebraPrinterKey(
-                        App.dom.zebraPrinterSelect?.value || App.state.selectedZebraPrinter
-                    );
-
-                    return App.config.ZEBRA_PRINTERS[key] || App.config.ZEBRA_PRINTERS.default;
-                },
-
-                handleZebraPrinterChange() {
-                    const config = App.actions.getSelectedZebraPrinterConfig();
-                    App.state.selectedZebraPrinter = config.key;
-                    App.actions.persistZebraPrinterPreference(config.key);
-
-                    if (App.dom.zebraPrinterSelect) {
-                        App.dom.zebraPrinterSelect.value = config.key;
-                    }
-                },
-
-                getZebraDeviceSearchText(device) {
-                    try {
-                        return JSON.stringify(device).toLowerCase().replace(/\s+/g, ' ');
-                    } catch (error) {
-                        return String(device ?? '').toLowerCase().replace(/\s+/g, ' ');
-                    }
-                },
-
-                getAvailableZebraPrinters(devices) {
-                    if (!devices || typeof devices !== 'object') {
-                        return [];
-                    }
-
-                    return Array.isArray(devices.printer)
-                        ? devices.printer.filter(printer => printer && typeof printer === 'object')
-                        : [];
-                },
-
-                matchesSelectedZebraPrinter(device, config) {
-                    const deviceText = App.actions.getZebraDeviceSearchText(device);
-                    const aliases = Array.isArray(config?.aliases) ? config.aliases : [];
-                    return aliases.some(alias => deviceText.includes(String(alias).toLowerCase()));
-                },
-
-                async fetchDefaultZebraPrinter() {
-                    try {
-                        const resDefault = await fetch(`${App.config.ZEBRA_BROWSER_PRINT_BASE_URL}/default`);
-                        if (!resDefault.ok) {
-                            return null;
-                        }
-
-                        const defaultText = await resDefault.text();
-                        if (!defaultText || !defaultText.includes('uid')) {
-                            return null;
-                        }
-
-                        try {
-                            const printer = JSON.parse(defaultText);
-                            return printer && typeof printer === 'object' ? printer : null;
-                        } catch (error) {
-                            return null;
-                        }
-                    } catch (error) {
-                        return null;
-                    }
-                },
-
-                async fetchAvailableZebraPrinters() {
-                    const resAvailable = await fetch(`${App.config.ZEBRA_BROWSER_PRINT_BASE_URL}/available`);
-                    if (!resAvailable.ok) {
-                        throw new Error('No se pudo conectar a Zebra Browser Print.');
-                    }
-
-                    return App.actions.getAvailableZebraPrinters(await resAvailable.json());
-                },
-
-                async resolveZebraPrinter(config = App.config.ZEBRA_PRINTERS.default) {
-                    if (!config || config.key === 'default') {
-                        const defaultPrinter = await App.actions.fetchDefaultZebraPrinter();
-                        if (defaultPrinter) {
-                            return defaultPrinter;
-                        }
-
-                        const printers = await App.actions.fetchAvailableZebraPrinters();
-                        return printers[0] || null;
-                    }
-
-                    const printers = await App.actions.fetchAvailableZebraPrinters();
-                    const matchedPrinter = printers.find(printer => App.actions.matchesSelectedZebraPrinter(printer, config));
-
-                    if (matchedPrinter) {
-                        return matchedPrinter;
-                    }
-
-                    throw new Error(
-                        `No se encontro la impresora ${config.label} en Zebra Browser Print.\nVerifica que este agregada, encendida y conectada a la red correcta.`
-                    );
-                },
-
-                async handleZebraPrint() {
-                    const selectedRows = App.table.getSelectedRows();
-                    const zplToPrint = selectedRows.length > 0
-                        ? App.table.buildRawZplFromRows(selectedRows)
-                        : App.state.rawZplData;
-
-                    if (!zplToPrint) {
-                        return;
-                    }
-
-                    const originalText = App.dom.printZebraBtn.innerHTML;
-                    App.dom.printZebraBtn.innerHTML = 'Buscando Zebra...';
-                    App.dom.printZebraBtn.disabled = true;
-
-                    try {
-                        const printerConfig = App.actions.getSelectedZebraPrinterConfig();
-                        const printer = await App.actions.resolveZebraPrinter(printerConfig);
-
-                        if (!printer || typeof printer !== 'object' || !printer.uid) {
-                            throw new Error(
-                                'No se encontro ninguna impresora Zebra disponible.\nAsegurate de que este encendida, con papel y conectada por cable o red.'
-                            );
-                        }
-
-                        App.dom.printZebraBtn.innerHTML = `Enviando a ${printerConfig.label}...`;
-
-                        const resWrite = await fetch(`${App.config.ZEBRA_BROWSER_PRINT_BASE_URL}/write`, {
-                            method: 'POST',
-                            body: JSON.stringify({
-                                device: printer,
-                                data: zplToPrint
-                            })
-                        });
-
-                        if (!resWrite.ok) {
-                            let errText = 'Error desconocido';
-                            try {
-                                errText = await resWrite.text();
-                            } catch (error) {
-                                errText = 'Error desconocido';
-                            }
-
-                            throw new Error(
-                                `Se encontro la impresora, pero fallo la transmision del texto hacia ella.\nDetalle: ${resWrite.status} ${errText}`
-                            );
-                        }
-
-                        if (selectedRows.length > 0) {
-                            App.table.clearSelectedRows();
-                            App.table.updateSelectionState();
-                        }
-
-                        App.ui.showMessage(
-                            'Las etiquetas fueron enviadas a la impresora Zebra exitosamente.',
-                            'success',
-                            { title: 'Impresion Zebra' }
-                        );
-                    } catch (error) {
-                        App.ui.reportError(
-                            error,
-                            'Error de impresion Zebra.\n\n1. Instala Zebra Browser Print desde la web oficial.\n2. Verifica que el icono de Zebra este activo junto al reloj de Windows.\n3. Autoriza el localhost con "Yes" la primera vez que se ejecute Desktop Print.',
-                            'Impresion Zebra'
-                        );
-                    } finally {
-                        App.dom.printZebraBtn.innerHTML = originalText;
-                        App.dom.printZebraBtn.disabled = App.state.extractedRows.length === 0 && App.state.selectedRowsById.size === 0;
-                    }
-                },
-
-                async handleCarrierLabelPrint(sourceKey) {
-                    const sync = typeof DriveSync !== 'undefined' ? DriveSync : null;
-                    const targetButton = sourceKey === 'bluexpress'
-                        ? App.dom.bluexpressLabelsBtn
-                        : App.dom.walmartLabelsBtn;
-
-                    if (!sync?.printCarrierLabels) {
-                        App.ui.showMessage(
-                            'Conecta Drive para cargar e imprimir etiquetas PDF.',
-                            'error',
-                            { title: 'Etiquetas PDF' }
-                        );
-                        return;
-                    }
-
-                    const originalText = targetButton?.innerHTML || '';
-                    if (targetButton) {
-                        targetButton.disabled = true;
-                        targetButton.innerHTML = 'Preparando PDF...';
-                    }
-
-                    try {
-                        const result = await sync.printCarrierLabels(sourceKey);
-                        if (result?.ok) {
-                            App.ui.showMessage(
-                                'Se abrio el visor de etiquetas PDF dentro de la app.',
-                                'success',
-                                { title: 'Etiquetas PDF' }
-                            );
-                        } else if (result?.message) {
-                            App.ui.showMessage(result.message, 'error', { title: 'Etiquetas PDF' });
-                        }
-                    } catch (error) {
-                        App.ui.reportError(
-                            error,
-                            'No se pudieron preparar las etiquetas PDF para imprimir.',
-                            'Etiquetas PDF'
-                        );
-                    } finally {
-                        if (targetButton) {
-                            targetButton.innerHTML = originalText;
-                            targetButton.disabled = false;
-                        }
-                    }
-                },
-
-                bindEvents() {
-                    App.dom.dropzone.addEventListener('click', () => {
-                        if (App.runtime.storage) {
-                            App.dom.fileInput.click();
-                        }
-                    });
-
-                    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-                        App.dom.dropzone.addEventListener(eventName, App.actions.preventDefaults, false);
-                    });
-
-                    ['dragenter', 'dragover'].forEach(eventName => {
-                        App.dom.dropzone.addEventListener(eventName, () => {
-                            if (App.runtime.storage) {
-                                App.dom.dropzone.classList.add('dragover');
-                            }
-                        }, false);
-                    });
-
-                    ['dragleave', 'drop'].forEach(eventName => {
-                        App.dom.dropzone.addEventListener(eventName, () => {
-                            App.dom.dropzone.classList.remove('dragover');
-                        }, false);
-                    });
-
-                    App.dom.dropzone.addEventListener('drop', async event => {
-                        try {
-                            await App.actions.handleDrop(event);
-                        } catch (error) {
-                            App.ui.reportError(error, 'No fue posible procesar los archivos seleccionados.', 'Archivos');
-                            App.dom.fileInput.value = '';
-                        }
-                    }, false);
-
-                    App.dom.fileInput.addEventListener('change', async event => {
-                        try {
-                            await App.actions.handleFiles(event.target.files);
-                        } catch (error) {
-                            App.ui.reportError(error, 'No fue posible procesar los archivos seleccionados.', 'Archivos');
-                            App.dom.fileInput.value = '';
-                        }
-                    }, false);
-
-                    App.dom.manageUsersBtn.addEventListener('click', () => App.users.togglePickerManager());
-                    App.dom.addPickerBtn.addEventListener('click', App.users.handleAddPicker);
-                    App.dom.newPickerInput.addEventListener('keydown', event => {
-                        if (event.key === 'Enter') {
-                            event.preventDefault();
-                            App.users.handleAddPicker();
-                        }
-                    });
-
-                    App.dom.pickerList.addEventListener('click', event => {
-                        const removeButton = event.target.closest('[data-remove-picker]');
-                        if (!removeButton) {
-                            return;
-                        }
-
-                        App.users.removePickerOption(removeButton.dataset.removePicker || '');
-                    });
-
-                    App.dom.historyList.addEventListener('click', event => {
-                        const historyButton = event.target.closest('[data-history-document-id]');
-                        if (!historyButton) {
-                            return;
-                        }
-
-                        App.storage.toggleHistoryDocumentSelection(historyButton.dataset.historyDocumentId || '');
-                    });
-
-                    App.dom.searchInput.addEventListener('input', App.table.handleSearch);
-                    App.dom.flexStatBtn?.addEventListener('click', () => App.table.setRowTypeFilter('flex'));
-                    App.dom.colectaStatBtn?.addEventListener('click', () => App.table.setRowTypeFilter('colecta'));
-                    App.dom.totalStatBtn?.addEventListener('click', () => App.table.setRowTypeFilter('all'));
-                    App.dom.outsideHoursToggleBtn?.addEventListener('click', App.storage.toggleOutsideHoursHistory);
-                    App.dom.showStoredBtn.addEventListener('click', App.table.handleShowStoredAction);
-                    App.dom.clearStoredBtn.addEventListener('click', App.actions.clearStoredHistory);
-                    App.dom.cancelOrderBtn?.addEventListener('click', App.table.markSelectedRowsAsCancelled);
-                    App.dom.savePortableBtn.addEventListener('click', App.actions.handlePortableSave);
-
-                    App.storage.switchHistoryTab('historial');
-                    App.dom.clearBtn.addEventListener('click', () => App.table.resetWorkspaceView(true));
-                    App.dom.processTextBtn.addEventListener('click', async () => {
-                        try {
-                            await App.actions.handlePastedText();
-                        } catch (error) {
-                            App.ui.reportError(error, 'No fue posible procesar el texto pegado.', 'Texto');
-                        }
-                    });
-
-                    App.dom.orderLookupLoadBtn?.addEventListener('click', () => {
-                        App.dom.orderLookupFileInput?.click();
-                    });
-
-                    App.dom.orderLookupFileInput?.addEventListener('change', async event => {
-                        const file = event.target.files?.[0];
-                        if (!file) {
-                            return;
-                        }
-
-                        if (!file.name.toLowerCase().endsWith('.xlsx')) {
-                            App.ui.showMessage('Solo se admiten archivos Excel con extension .xlsx.', 'warning', { title: 'Consulta Pedido' });
-                            event.target.value = '';
-                            return;
-                        }
-
-                        try {
-                            await App.orderLookup.loadWorkbook(file);
-                        } catch (error) {
-                            App.ui.reportError(error, 'No fue posible cargar el archivo Excel.', 'Consulta Pedido');
-                            App.orderLookup.resetData();
-                            App.orderLookup.resetResults();
-                        } finally {
-                            event.target.value = '';
-                        }
-                    });
-
-                    App.dom.orderLookupSearchBtn?.addEventListener('click', () => {
-                        App.orderLookup.applyFilters();
-                    });
-
-                    App.dom.orderLookupInput?.addEventListener('keydown', event => {
-                        if (event.key === 'Enter') {
-                            event.preventDefault();
-                            App.orderLookup.applyFilters();
-                        }
-                    });
-
-                    App.dom.orderLookupStateFilter?.addEventListener('change', () => {
-                        App.table.setStatusFilter(App.dom.orderLookupStateFilter.value);
-                    });
-
-                    App.dom.mainStatusFilter?.addEventListener('change', () => {
-                        App.table.setStatusFilter(App.dom.mainStatusFilter.value);
-                    });
-
-                    App.dom.orderLookupRouteFilter?.addEventListener('change', () => {
-                        // Re-poblar Estado filtrado por la ruta seleccionada
-                        const selectedRoute = App.helpers.normalizeComparable(
-                            App.dom.orderLookupRouteFilter.value
-                        );
-                        const allRows = App.orderLookup.getScopedRows();
-                        const filteredRows = selectedRoute
-                            ? allRows.filter(row => {
-                                const route = App.helpers.normalizeComparable(
-                                    row.logisticsType || App.orderLookup.resolveLogisticsType(row)
-                                );
-                                return route === selectedRoute;
-                            })
-                            : allRows;
-
-                        // Resetear Estado a "Todos" antes de re-poblar
-                        if (App.dom.orderLookupStateFilter) {
-                            App.dom.orderLookupStateFilter.value = '';
-                        }
-                        App.orderLookup.populateStateFilter(filteredRows);
-
-                        App.orderLookup.applyFilters({ showWarningOnEmptySource: false });
-                    });
-
-                    App.dom.orderLookupClearFiltersBtn?.addEventListener('click', () => {
-                        App.orderLookup.clearFilters();
-                    });
-
-                    App.dom.downloadBtn.addEventListener('click', App.actions.handleCsvDownload);
-                    App.dom.printZebraBtn.addEventListener('click', App.actions.handleZebraPrint);
-                    App.dom.bluexpressLabelsBtn?.addEventListener('click', event => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        App.actions.handleCarrierLabelPrint('bluexpress');
-                    });
-                    App.dom.walmartLabelsBtn?.addEventListener('click', event => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        App.actions.handleCarrierLabelPrint('walmart');
-                    });
-                    App.dom.zebraPrinterSelect?.addEventListener('change', App.actions.handleZebraPrinterChange);
-                    App.dom.themeToggleBtn?.addEventListener('click', event => {
-                        event.stopPropagation();
-                        App.theme.toggle();
-                    });
-                    App.dom.notificationBellBtn?.addEventListener('click', event => {
-                        event.stopPropagation();
-                        App.notifications.toggle();
-                    });
-                    App.dom.notificationPanelCloseBtn?.addEventListener('click', () => {
-                        App.notifications.setOpen(false);
-                    });
-                    App.dom.notificationPanelRefreshBtn?.addEventListener('click', () => {
-                        App.notifications.render();
-                    });
-                    App.dom.notificationDriveBtn?.addEventListener('click', () => {
-                        App.notifications.openDrivePanel();
-                    });
-                    App.dom.notificationPanel?.addEventListener('click', event => {
-                        event.stopPropagation();
-                    });
-                    document.addEventListener('click', () => {
-                        if (App.state.notificationPanelOpen) {
-                            App.notifications.setOpen(false);
-                        }
-                    });
-                    document.addEventListener('keydown', event => {
-                        if (event.key === 'Escape' && App.state.notificationPanelOpen) {
-                            App.notifications.setOpen(false);
-                        }
-                    });
-                },
-
-                startTimers() {
-                    window.setInterval(() => {
-                        App.storage.pruneHistoryBySchedule();
-                        App.storage.updateStorageUI();
-                        App.storage.updateWindowControls();
-                    }, 60000);
-
-                window.setInterval(() => {
-                    App.storage.refreshStorageStatus(new Date());
-                    App.systemStatus.refresh();
-                    App.notifications.updateBadge();
-                    if (App.state.notificationPanelOpen) {
-                        App.notifications.render();
-                    }
-                }, 1000);
-                }
-            },
-
-            init() {
-                App.runtime.storage = App.storage.getBrowserStorage();
-                App.theme.apply(App.theme.loadPreference());
-                App.runtime.defaultPickerOptions = Array.from(App.dom.pickerInput.querySelectorAll('option'))
-                    .map(option => option.value.trim())
-                    .filter(Boolean);
-
-                App.state.embeddedDocuments = App.storage.loadEmbeddedDocuments();
-                App.state.outsideHoursHistoryEnabled = App.storage.loadOutsideHoursHistoryPreference();
-                App.state.pickerOptions = App.users.loadPickerOptions();
-                App.state.manualOrderStatuses = {
-                    ...App.storage.loadEmbeddedManualOrderStatuses(),
-                    ...App.storage.loadStoredManualOrderStatuses()
-                };
-                App.state.selectedZebraPrinter = App.actions.loadZebraPrinterPreference();
-                App.state.storedDocuments = App.storage.getVisibleStoredDocuments(
-                    App.storage.loadStoredDocuments(),
-                    App.state.embeddedDocuments
-                );
-
-                if (App.dom.zebraPrinterSelect) {
-                    App.dom.zebraPrinterSelect.value = App.state.selectedZebraPrinter;
-                }
-
-                if (App.dom.pasteTitle) {
-                    App.dom.pasteTitle.textContent = 'Pegar Texto';
-                }
-
-                App.users.renderPickerOptions();
-                App.users.renderPickerManager();
-                App.dom.selectedInfo.textContent = App.defaults.selectionMessage;
-                App.orderLookup.setLoadedFileName('');
-                App.orderLookup.resetResults();
-
-                App.storage.pruneHistoryBySchedule();
-                App.ui.updateResultsMeta(App.defaults.emptyResultsMessage);
-                App.storage.updateStorageUI();
-                App.storage.updateWindowControls();
-                App.storage.refreshStorageStatus(new Date());
-                App.systemStatus.refresh();
-                App.table.resetActionButtons();
-                App.table.updateTypeFilterButtons({ flex: 0, colecta: 0, total: 0 });
-                App.notifications.updateBadge();
-                App.actions.restoreStoredDocumentsOnOpen();
-                App.orderLookup.restoreStoredState();
-                App.actions.bindEvents();
-                App.actions.startTimers();
+        const fileBtn = event.target.closest('[data-carrier-print-index]');
+        if (fileBtn && modal.contains(fileBtn)) {
+            _setCarrierPrintActiveIndex(Number(fileBtn.dataset.carrierPrintIndex) || 0);
+        }
+    });
+
+    modal.querySelector('#carrierPrintSelect')?.addEventListener('change', event => {
+        _setCarrierPrintActiveIndex(Number(event.target.value) || 0);
+    });
+
+    modal.querySelector('#carrierPrintPrintBtn')?.addEventListener('click', _printCurrentCarrierPdf);
+
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && !modal.hidden) _closeCarrierPrintModal();
+    });
+
+    return modal;
+}
+
+function _closeCarrierPrintModal() {
+    const modal = document.getElementById('carrierPrintModal');
+    if (!modal) return;
+
+    modal.hidden = true;
+    document.body.classList.remove('carrier-print-lock');
+    const frame = modal.querySelector('#carrierPrintFrame');
+    if (frame) frame.removeAttribute('src');
+    _cleanupCarrierPrintEntries();
+
+    if (_carrierPrintState.lastFocused && typeof _carrierPrintState.lastFocused.focus === 'function') {
+        _carrierPrintState.lastFocused.focus();
+    }
+}
+
+function _renderCarrierPrintMessage(source, message, isError = false) {
+    const modal = _ensureCarrierPrintModal();
+    _cleanupCarrierPrintEntries();
+    _carrierPrintState.lastFocused = document.activeElement;
+
+    modal.querySelector('#carrierPrintKicker').textContent = source.label;
+    modal.querySelector('#carrierPrintTitle').textContent = `Etiquetas ${source.label}`;
+    modal.querySelector('#carrierPrintMeta').textContent = message;
+    modal.querySelector('#carrierPrintSelect').innerHTML = '';
+    modal.querySelector('#carrierPrintFileList').innerHTML = `<div class="carrier-print-empty${isError ? ' is-error' : ''}">${_esc(message)}</div>`;
+    modal.querySelector('#carrierPrintPrintBtn').disabled = true;
+    modal.querySelector('#carrierPrintFrame')?.removeAttribute('src');
+
+    modal.hidden = false;
+    document.body.classList.add('carrier-print-lock');
+}
+
+function _syncCarrierPrintStatusUi() {
+    const modal = document.getElementById('carrierPrintModal');
+    if (!modal) return;
+
+    _carrierPrintState.entries.forEach((entry, index) => {
+        const info = _getCarrierPrintedInfo(entry.sourceKey, entry.id);
+        entry.printedInfo = info;
+
+        const button = modal.querySelector(`[data-carrier-print-index="${index}"]`);
+        if (button) {
+            button.classList.toggle('is-printed', !!info);
+            const status = button.querySelector('.carrier-print-file-status');
+            if (status) {
+                status.classList.toggle('is-printed', !!info);
+                status.classList.toggle('is-pending', !info);
+                status.textContent = _carrierPrintStatusText(info);
             }
-        };
+        }
 
-        App.init();
-        window.App = App;
+        const option = modal.querySelector(`#carrierPrintSelect option[value="${index}"]`);
+        if (option) {
+            option.textContent = `${info ? 'Impresa - ' : ''}${entry.name}`;
+        }
+    });
+}
+
+function _setCarrierPrintActiveIndex(index) {
+    const modal = _ensureCarrierPrintModal();
+    const entries = _carrierPrintState.entries;
+    if (!entries.length) return;
+
+    const nextIndex = Math.max(0, Math.min(index, entries.length - 1));
+    const entry = entries[nextIndex];
+    _carrierPrintState.activeIndex = nextIndex;
+
+    const select = modal.querySelector('#carrierPrintSelect');
+    const frame = modal.querySelector('#carrierPrintFrame');
+    const printBtn = modal.querySelector('#carrierPrintPrintBtn');
+    const meta = modal.querySelector('#carrierPrintMeta');
+    const printedInfo = _getCarrierPrintedInfo(entry.sourceKey, entry.id);
+    entry.printedInfo = printedInfo;
+
+    if (select) select.value = String(nextIndex);
+    if (frame) {
+        frame.dataset.loaded = '0';
+        frame.src = entry.url;
+    }
+    if (printBtn) {
+        printBtn.disabled = false;
+        printBtn.textContent = printedInfo ? 'Reimprimir PDF' : 'Imprimir PDF';
+        printBtn.classList.toggle('is-reprint', !!printedInfo);
+    }
+    if (meta) {
+        meta.textContent = printedInfo
+            ? `Esta etiqueta ya fue marcada como impresa: ${_carrierPrintStatusText(printedInfo)}.`
+            : `${entries.length} PDF(s) listo(s). Revisa el cuadre y presiona Imprimir PDF.`;
     }
 
-    bootstrap();
-})();
+    modal.querySelectorAll('[data-carrier-print-index]').forEach(button => {
+        const isActive = Number(button.dataset.carrierPrintIndex) === nextIndex;
+        button.classList.toggle('is-active', isActive);
+        button.setAttribute('aria-pressed', String(isActive));
+    });
+    _syncCarrierPrintStatusUi();
+}
+
+function _showCarrierPrintModal(source, entries) {
+    const modal = _ensureCarrierPrintModal();
+    _cleanupCarrierPrintEntries();
+    _carrierPrintState.entries = entries;
+    _carrierPrintState.lastFocused = document.activeElement;
+
+    modal.querySelector('#carrierPrintKicker').textContent = source.label;
+    modal.querySelector('#carrierPrintTitle').textContent = `Etiquetas ${source.label}`;
+    modal.querySelector('#carrierPrintMeta').textContent = `${entries.length} PDF(s) listo(s). Revisa el cuadre y presiona Imprimir PDF.`;
+
+    const select = modal.querySelector('#carrierPrintSelect');
+    const list = modal.querySelector('#carrierPrintFileList');
+    if (select) {
+        select.innerHTML = entries.map((entry, index) => {
+            const info = _getCarrierPrintedInfo(entry.sourceKey, entry.id);
+            return `<option value="${index}">${_esc(`${info ? 'Impresa - ' : ''}${entry.name}`)}</option>`;
+        }).join('');
+    }
+    if (list) {
+        list.innerHTML = entries.map((entry, index) => {
+            const info = _getCarrierPrintedInfo(entry.sourceKey, entry.id);
+            entry.printedInfo = info;
+            return `
+            <button class="carrier-print-file${info ? ' is-printed' : ''}" type="button" data-carrier-print-index="${index}" aria-pressed="false">
+                <strong>${_esc(entry.name)}</strong>
+                <span class="carrier-print-file-meta">${_esc(entry.meta)}</span>
+                <span class="carrier-print-file-status ${info ? 'is-printed' : 'is-pending'}">${_esc(_carrierPrintStatusText(info))}</span>
+            </button>
+        `;
+        }).join('');
+    }
+
+    const frame = modal.querySelector('#carrierPrintFrame');
+    if (frame) {
+        frame.onload = () => { frame.dataset.loaded = '1'; };
+    }
+
+    modal.hidden = false;
+    document.body.classList.add('carrier-print-lock');
+    _setCarrierPrintActiveIndex(0);
+    modal.querySelector('#carrierPrintPrintBtn')?.focus();
+}
+
+function _printCurrentCarrierPdf() {
+    const modal = _ensureCarrierPrintModal();
+    const frame = modal.querySelector('#carrierPrintFrame');
+    const button = modal.querySelector('#carrierPrintPrintBtn');
+    const entry = _carrierPrintState.entries[_carrierPrintState.activeIndex];
+
+    if (!frame?.src) {
+        _setToast('Selecciona un PDF para imprimir.', false);
+        return;
+    }
+
+    const printedInfo = entry ? _getCarrierPrintedInfo(entry.sourceKey, entry.id) : null;
+    if (printedInfo) {
+        const when = _formatCarrierPrintedAt(printedInfo);
+        const ok = window.confirm(`Esta etiqueta ya figura como impresa${when ? ` (${when})` : ''}. Quieres imprimirla otra vez?`);
+        if (!ok) return;
+    }
+
+    const originalText = button?.textContent || 'Imprimir PDF';
+    if (button) {
+        button.disabled = true;
+        button.textContent = 'Preparando impresion...';
+    }
+
+    const runPrint = () => {
+        try {
+            frame.contentWindow?.focus();
+            frame.contentWindow?.print();
+            if (entry) {
+                entry.printedInfo = _markCarrierPrinted(entry);
+                _renderCarrierPanel();
+                _syncCarrierPrintStatusUi();
+                const meta = modal.querySelector('#carrierPrintMeta');
+                if (meta) {
+                    meta.textContent = `Esta etiqueta ya fue marcada como impresa: ${_carrierPrintStatusText(entry.printedInfo)}.`;
+                }
+                if (button) {
+                    button.textContent = 'Reimprimir PDF';
+                    button.classList.add('is-reprint');
+                }
+            }
+            _setToast(printedInfo ? 'Etiqueta marcada como reimpresa.' : 'Etiqueta marcada como impresa.');
+        } catch (err) {
+            console.warn('[DriveSync] print current PDF:', err);
+            _setToast('No se pudo abrir el dialogo de impresion del PDF.', false);
+        } finally {
+            if (button) {
+                const currentPrinted = entry ? _getCarrierPrintedInfo(entry.sourceKey, entry.id) : null;
+                button.textContent = currentPrinted ? 'Reimprimir PDF' : originalText;
+                button.disabled = false;
+            }
+        }
+    };
+
+    if (frame.dataset.loaded === '1') {
+        window.setTimeout(runPrint, 150);
+    } else {
+        frame.addEventListener('load', () => window.setTimeout(runPrint, 250), { once: true });
+    }
+}
+
+async function _printCarrierLabels(sourceKey) {
+    const source = _getSourceConfig(sourceKey);
+    if (!PDF_LABEL_SOURCE_KEYS.includes(source.key)) {
+        const message = 'Este boton solo imprime etiquetas PDF de Bluexpress o Walmart.';
+        _setToast(message, false);
+        return { ok: false, message };
+    }
+
+    if (!_state.isPolling && !_tokenStore.isValid(0)) {
+        const message = 'Conecta Drive para imprimir etiquetas PDF.';
+        _setToast(message, false);
+        return { ok: false, message };
+    }
+
+    _setActiveLabelSource(source.key);
+
+    try {
+        await _ensureFreshToken();
+
+        let files = _getActiveCarrierFiles(source.key);
+        if (files.length === 0) {
+            files = await _loadPdfSourceFiles(source.key, _state.offsetDay || 0);
+            _state.carrierFiles = { ..._state.carrierFiles, [source.key]: files };
+            _updateCarrierStats();
+            _renderCarrierPanel();
+        }
+
+        if (files.length === 0) {
+            const message = `No hay etiquetas PDF de ${source.label} para imprimir.`;
+            _renderCarrierPrintMessage(source, message, true);
+            _setToast(message, false);
+            return { ok: false, message, count: 0 };
+        }
+
+        const entries = [];
+        for (const file of files) {
+            const blob = await _downloadDriveBlob(file.id, 'application/pdf');
+            const url = URL.createObjectURL(blob);
+            const date = _formatDriveDate(file.createdTime || file.modifiedTime) || 'Sin fecha';
+            const time = _formatDriveTime(file.createdTime || file.modifiedTime) || '';
+            const folder = file.folder || source.folder;
+            entries.push({
+                sourceKey: source.key,
+                id: file.id,
+                name: file.name || `Etiqueta ${source.label}`,
+                meta: [folder, date, time].filter(Boolean).join(' - '),
+                url,
+                printedInfo: _getCarrierPrintedInfo(source.key, file.id),
+            });
+        }
+
+        _showCarrierPrintModal(source, entries);
+
+        const message = `${entries.length} PDF(s) de ${source.label} listos para imprimir.`;
+        _setToast(message);
+        return { ok: true, message, count: entries.length, source: source.key };
+    } catch (err) {
+        console.warn('[DriveSync] printCarrierLabels:', err);
+        const message = `No se pudieron preparar las etiquetas PDF de ${source.label}.`;
+        _renderCarrierPrintMessage(source, message, true);
+        _setToast(message, false);
+        return { ok: false, message, error: err };
+    }
+}
+
+async function _refreshCarrierLabels(silent = false) {
+    if (!_state.isPolling && !_tokenStore.isValid(0)) {
+        if (!silent) _setToast('Conecta Drive para revisar PDFs de Bluexpress y Walmart.', false);
+        return;
+    }
+
+    try {
+        await _ensureFreshToken();
+        _state.carrierFiles = { ..._state.carrierFiles, ...(await _loadAllPdfSources(_state.offsetDay || 0)) };
+        _updateCarrierStats();
+        _renderCarrierPanel();
+        if (!silent) _setToast('Etiquetas PDF actualizadas.');
+    } catch (err) {
+        console.warn('[DriveSync] refreshCarrierLabels:', err);
+        if (!silent) _setToast('No se pudieron actualizar las etiquetas PDF.', false);
+    }
+}
+
+function _initCarrierLabelsUi() {
+    if (_state.carrierUiReady) return;
+    _state.carrierUiReady = true;
+
+    const results = document.getElementById('results');
+    if (!results) return;
+
+    results.addEventListener('click', event => {
+        const openBtn = event.target.closest('[data-carrier-file-id]');
+        if (openBtn) {
+            event.preventDefault();
+            _openCarrierFile(openBtn.dataset.carrierSource, openBtn.dataset.carrierFileId);
+            return;
+        }
+
+        const sourceBtn = event.target.closest('[data-label-source]');
+        if (sourceBtn && results.contains(sourceBtn)) {
+            event.preventDefault();
+            _setActiveLabelSource(sourceBtn.dataset.labelSource);
+        }
+    });
+
+    const refreshBtn = document.getElementById('carrierLabelsRefreshBtn');
+    refreshBtn?.addEventListener('click', () => _refreshCarrierLabels(false));
+
+    _updateCarrierStats();
+    _renderCarrierPanel();
+}
+
+// ─── FIX #3 — Paginación completa ─────────────────────────────────────────────
+
+async function _listFilesAll(params) {
+    const results = [];
+    let pageToken;
+    do {
+        const res = await gapi.client.drive.files.list({
+            ...params,
+            pageSize:  1000,
+            pageToken: pageToken || undefined,
+        });
+        results.push(...(res.result.files || []));
+        pageToken = res.result.nextPageToken;
+    } while (pageToken);
+    return results;
+}
+
+// ─── FIX #5 — Recursión paralela ──────────────────────────────────────────────
+
+function _getSourceConfig(sourceKey = 'mercadolibre') {
+    return DRIVE_LABEL_SOURCES[sourceKey] || DRIVE_LABEL_SOURCES.mercadolibre;
+}
+
+async function _getAllDriveFilesRecursive(folderId, sourceKey = 'mercadolibre', folderName = '', _seenIds = new Set()) {
+    const source = _getSourceConfig(sourceKey);
+    const [matchingFiles, subFolders] = await Promise.all([
+        _listFilesAll({
+            q:      `'${folderId}' in parents and mimeType='${source.mimeType}' and trashed=false`,
+            fields: 'files(id,name,createdTime,modifiedTime,mimeType,webViewLink,webContentLink)',
+            supportsAllDrives: true, includeItemsFromAllDrives: true, corpora: 'allDrives',
+        }),
+        _listFilesAll({
+            q:      `'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+            fields: 'files(id,name)',
+            supportsAllDrives: true, includeItemsFromAllDrives: true, corpora: 'allDrives',
+        }),
+    ]);
+
+    const results = [];
+    for (const f of matchingFiles) {
+        if (_seenIds.has(f.id)) continue;
+        _seenIds.add(f.id);
+        results.push({ ...f, folder: folderName, source: source.key });
+    }
+
+    const nested = await Promise.all(
+        subFolders.map(sub => _getAllDriveFilesRecursive(sub.id, source.key, sub.name, _seenIds))
+    );
+    nested.forEach(arr => results.push(...arr));
+    return results;
+}
+
+async function _getAllTxtRecursive(folderId, folderName = '', _seenIds = new Set()) {
+    return _getAllDriveFilesRecursive(folderId, 'mercadolibre', folderName, _seenIds);
+}
+
+async function _getAllPdfRecursive(folderId, sourceKey, folderName = '', _seenIds = new Set()) {
+    return _getAllDriveFilesRecursive(folderId, sourceKey, folderName, _seenIds);
+}
+
+function _nameKey(f) {
+    return `${(f.source || 'mercadolibre').toLowerCase().trim()}|${(f.folder || '').toLowerCase().trim()}|${f.name.toLowerCase().trim()}`;
+}
+
+function _syncSeenFilesForToday() {
+    const todayKey = _todayKey();
+    if (_state.scanDayKey === todayKey) return;
+
+    const seenFiles = _loadSeenFiles();
+    _state.knownIds = seenFiles.ids;
+    _state.knownNames = seenFiles.names;
+    _state.scanDayKey = todayKey;
+}
+
+function _hasSeenFile(file) {
+    return _state.knownIds.has(file.id) || _state.knownNames.has(_nameKey(file));
+}
+
+function _rememberSeenFile(file, persist = true) {
+    _state.knownIds.add(file.id);
+    _state.knownNames.add(_nameKey(file));
+    if (persist) _saveSeenFiles();
+}
+
+// ─── Matching flexible de carpetas ────────────────────────────────────────────
+// Normaliza nombres a mayúsculas y elimina acentos para comparar sin importar
+// si el operador escribió "07 MAYO", "7 Mayo", "7 mayo", etc.
+
+function _normalizeFolder(name) {
+    return String(name).trim().toUpperCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+/** Variantes del nombre del mes: "MAYO 2026" (con y sin año) */
+function _getMesVariants(d) {
+    const mes  = MESES[d.getMonth()];
+    const year = d.getFullYear();
+    return [`${mes} ${year}`, mes].map(_normalizeFolder);
+}
+
+/** Variantes del nombre del día: "7 MAYO" y "07 MAYO" */
+function _getDiaVariants(d) {
+    const day = d.getDate();
+    const mes = MESES[d.getMonth()];
+    return [
+        `${day} ${mes}`,
+        `${String(day).padStart(2, '0')} ${mes}`,
+    ].map(_normalizeFolder);
+}
+
+/**
+ * Lista TODAS las subcarpetas de parentId y devuelve la primera
+ * cuyo nombre (normalizado) coincide con alguna de las variantes dadas.
+ */
+async function _findFolderFlexible(parentId, variants) {
+    const folders = await _listFilesAll({
+        q:      `'${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+        fields: 'files(id,name)',
+        supportsAllDrives: true, includeItemsFromAllDrives: true, corpora: 'allDrives',
+    });
+    return folders.find(f => variants.includes(_normalizeFolder(f.name))) ?? null;
+}
+
+async function _getMarketplaceRootFolderId() {
+    const marketplaceFolder = await _findFolderFlexible(
+        DRIVE_CONFIG.ROOT_FOLDER_ID,
+        [_normalizeFolder(DRIVE_CONFIG.MARKETPLACE_FOLDER)]
+    );
+    return marketplaceFolder?.id || DRIVE_CONFIG.ROOT_FOLDER_ID;
+}
+
+async function _getSourceRootFolderId(sourceKey = 'mercadolibre') {
+    const source = _getSourceConfig(sourceKey);
+    if (source.key === 'mercadolibre') return _getMarketplaceRootFolderId();
+
+    const sourceFolder = await _findFolderFlexible(
+        DRIVE_CONFIG.ROOT_FOLDER_ID,
+        [source.folder, ...(source.aliases || [])].map(_normalizeFolder)
+    );
+    return sourceFolder?.id || (source.fallbackToRoot ? DRIVE_CONFIG.ROOT_FOLDER_ID : null);
+}
+
+async function _getDayFolderId(offset = 0, sourceKey = 'mercadolibre', options = {}) {
+    const d = new Date();
+    d.setDate(d.getDate() + offset);
+    const source = _getSourceConfig(sourceKey);
+    const silent = !!options.silent;
+
+    const rootFolderId = await _getSourceRootFolderId(source.key);
+    if (!rootFolderId) {
+        if (!silent) _setStatus(`Sin carpeta "${source.folder}"`, false);
+        return null;
+    }
+    const mesCarpeta = await _findFolderFlexible(rootFolderId, _getMesVariants(d));
+    if (!mesCarpeta && silent) return null;
+    if (!mesCarpeta) { _setStatus(`⚠ Sin carpeta "${_getMes(d)}"`); return null; }
+
+    const diaCarpeta = await _findFolderFlexible(mesCarpeta.id, _getDiaVariants(d));
+    if (!diaCarpeta && silent) return null;
+    if (!diaCarpeta) { _setStatus(`Sin carpeta "${_getDia(d)}" en ${_getMes(d)}`, true); return null; }
+
+    return diaCarpeta.id;
+}
+
+/** Formatea createdTime de Drive (ISO 8601) como fecha local DD-MM-AAAA */
+function _formatDriveDate(isoString) {
+    if (!isoString) return '';
+    try {
+        return new Date(isoString).toLocaleDateString('es-CL', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+        });
+    } catch { return ''; }
+}
+
+/** Formatea createdTime de Drive (ISO 8601) como hora local HH:MM */
+function _formatDriveTime(isoString) {
+    if (!isoString) return '';
+    try { return new Date(isoString).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }); }
+    catch { return ''; }
+}
+
+function _isDriveDateOnOffset(isoString, offset = 0) {
+    if (!isoString) return false;
+    try {
+        const target = new Date();
+        target.setDate(target.getDate() + offset);
+        const value = new Date(isoString);
+        return value.getFullYear() === target.getFullYear()
+            && value.getMonth() === target.getMonth()
+            && value.getDate() === target.getDate();
+    } catch {
+        return false;
+    }
+}
+
+function _sortDriveFilesNewestFirst(files) {
+    return [...files].sort((a, b) => {
+        const at = new Date(a.createdTime || a.modifiedTime || 0).getTime();
+        const bt = new Date(b.createdTime || b.modifiedTime || 0).getTime();
+        return bt - at;
+    });
+}
+
+async function _loadPdfSourceFiles(sourceKey, offset = 0) {
+    const source = _getSourceConfig(sourceKey);
+    const dayId = await _getDayFolderId(offset, source.key, { silent: true });
+    let files = [];
+
+    if (dayId) {
+        files = await _getAllPdfRecursive(dayId, source.key);
+    } else {
+        const sourceRootId = await _getSourceRootFolderId(source.key);
+        if (!sourceRootId) return [];
+        files = await _getAllPdfRecursive(sourceRootId, source.key);
+        files = files.filter(file => _isDriveDateOnOffset(file.createdTime || file.modifiedTime, offset));
+    }
+
+    return _sortDriveFilesNewestFirst(files);
+}
+
+async function _loadAllPdfSources(offset = 0) {
+    const entries = await Promise.all(PDF_LABEL_SOURCE_KEYS.map(async sourceKey => {
+        try {
+            return [sourceKey, await _loadPdfSourceFiles(sourceKey, offset)];
+        } catch (err) {
+            console.warn(`[DriveSync] No se pudieron leer PDFs ${sourceKey}:`, err);
+            return [sourceKey, []];
+        }
+    }));
+
+    return Object.fromEntries(entries);
+}
+
+function _getDriveAccessToken() {
+    const gapiToken = typeof gapi !== 'undefined' && gapi.auth?.getToken
+        ? gapi.auth.getToken()
+        : null;
+    return gapiToken?.access_token || _tokenStore.load()?.access_token || '';
+}
+
+async function _downloadDriveBlob(fileId, fallbackMimeType = 'application/octet-stream') {
+    await _ensureFreshToken();
+    const accessToken = _getDriveAccessToken();
+    if (!accessToken) throw new Error('Sin token de acceso');
+
+    const r = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+
+    const blob = await r.blob();
+    return blob.type ? blob : new Blob([blob], { type: fallbackMimeType });
+}
+
+async function _downloadText(fileId) {
+    const accessToken = _getDriveAccessToken();
+    if (!accessToken) throw new Error('Sin token de acceso');
+    const r = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.text();
+}
+
+function _countBulks(text) {
+    const zpl = (text.match(/\^XA/gi) || []).length;
+    return zpl > 0 ? zpl : (text.match(/"id"\s*:\s*"?\d+"?/gi) || []).length;
+}
+
+// ─── Reloj de expiración del token ────────────────────────────────────────────
+// Muestra una cuenta regresiva en el header del panel mientras se está
+// monitoreando. Notifica al usuario cuando quedan 10 y 5 minutos.
+
+const _countdown = {
+    timer:      null,
+    notifiedAt: new Set(),   // umbrales ya notificados en este ciclo de token
+
+    start() {
+        this.stop();
+        this.notifiedAt.clear();
+        _injectCountdownEl();
+        _tickCountdown();                                         // tick inmediato
+        this.timer = setInterval(_tickCountdown, 1_000);
+    },
+
+    stop() {
+        clearInterval(this.timer);
+        this.timer = null;
+        document.getElementById('drive-token-clock')?.remove();
+    },
+
+    /** Llamar después de un refresh exitoso para reiniciar el ciclo */
+    reset() {
+        this.notifiedAt.clear();
+        // El timer sigue corriendo; el próximo tick leerá el nuevo expires_at
+    },
+};
+
+/** Inyecta el elemento del reloj en el header del panel Drive */
+function _injectCountdownEl() {
+    if (document.getElementById('drive-token-clock')) return;
+    const header = document.querySelector('#drive-sync-panel .lp-drive-header');
+    if (!header) return;
+    const el      = document.createElement('span');
+    el.id         = 'drive-token-clock';
+    el.className  = 'ds-token-clock';
+    el.title      = 'Tiempo restante del token de Google';
+    header.appendChild(el);
+}
+
+/** Se ejecuta cada segundo mientras el polling está activo */
+function _tickCountdown() {
+    const el = document.getElementById('drive-token-clock');
+    if (!el) return;
+
+    const token = _tokenStore.load();
+    if (!token?.expires_at) { el.textContent = ''; return; }
+
+    const remaining = token.expires_at - Date.now();
+
+    if (remaining <= 0) {
+        el.textContent = '⏱ 0:00';
+        el.className   = 'ds-token-clock ds-token-clock--critical';
+        return;
+    }
+
+    const totalSecs = Math.floor(remaining / 1_000);
+    const mins      = Math.floor(totalSecs / 60);
+    const secs      = totalSecs % 60;
+    el.textContent  = `⏱ ${mins}:${String(secs).padStart(2, '0')}`;
+
+    if (remaining < 5 * 60_000) {
+        el.className = 'ds-token-clock ds-token-clock--critical';
+    } else if (remaining < 10 * 60_000) {
+        el.className = 'ds-token-clock ds-token-clock--warning';
+    } else {
+        el.className = 'ds-token-clock';
+    }
+
+    // Notificaciones en umbrales exactos (una sola vez por umbral)
+    for (const threshold of [10, 5]) {
+        if (mins === threshold && secs === 0 && !_countdown.notifiedAt.has(threshold)) {
+            _countdown.notifiedAt.add(threshold);
+            _notifyTokenExpiry(threshold);
+        }
+    }
+}
+
+// ─── Alertas sonoras del token ────────────────────────────────────────────────
+// Usa Web Audio API para generar beeps sin depender de archivos externos.
+// El AudioContext se crea de forma lazy para respetar la política de autoplay
+// de los navegadores (requiere gesto previo del usuario — que ya ocurrió al
+// hacer clic en "Conectar Drive").
+
+let _audioCtx = null;
+
+function _getAudioCtx() {
+    if (!_audioCtx) {
+        try {
+            _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        } catch (e) {
+            return null;
+        }
+    }
+    if (_audioCtx.state === 'suspended') _audioCtx.resume();
+    return _audioCtx;
+}
+
+async function _ensureAudioReady() {
+    const ctx = _getAudioCtx();
+    if (!ctx) return null;
+    if (ctx.state === 'suspended') {
+        try {
+            await ctx.resume();
+        } catch (e) {
+            console.warn('[DriveSync] No se pudo activar el audio:', e);
+        }
+    }
+    return ctx;
+}
+
+/**
+ * Genera un beep simple con envelope suave para evitar clicks audibles.
+ * @param {number} frequency  — Hz (ej: 440 = La, 880 = La+octava)
+ * @param {number} duration   — segundos de duración del tono
+ * @param {number} volume     — ganancia pico (0.0–1.0)
+ * @param {number} startDelay — segundos desde ahora para iniciar
+ */
+/**
+ * Genera un tono con envelope ADSR simplificado.
+ * @param {number} frequency  — Hz
+ * @param {number} duration   — segundos de duración total
+ * @param {number} volume     — ganancia pico (0.0 – 1.0)
+ * @param {number} startDelay — segundos desde ahora para iniciar
+ * @param {string} waveType   — 'sine' | 'triangle' | 'square' | 'sawtooth'
+ */
+function _beep(frequency, duration, volume = 0.6, startDelay = 0, waveType = 'sine') {
+    const ctx = _getAudioCtx();
+    if (!ctx) return;
+
+    const osc  = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(_getAudioOutput(ctx));
+
+    const t0      = ctx.currentTime + startDelay;
+    const attack  = 0.015;
+    const release = duration * 0.45;   // decaimiento en la segunda mitad del tono
+
+    osc.type = waveType;
+    osc.frequency.setValueAtTime(frequency, t0);
+
+    gain.gain.setValueAtTime(0,      t0);
+    gain.gain.linearRampToValueAtTime(volume, t0 + attack);
+    gain.gain.setValueAtTime(volume, t0 + duration - release);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + duration);
+
+    osc.start(t0);
+    osc.stop(t0 + duration);
+}
+
+let _audioOutput = null;
+
+function _getAudioOutput(ctx) {
+    if (_audioOutput?.context === ctx) return _audioOutput.input;
+
+    const boost = ctx.createGain();
+    const compressor = ctx.createDynamicsCompressor();
+
+    boost.gain.value = 1.55;
+    compressor.threshold.value = -18;
+    compressor.knee.value = 18;
+    compressor.ratio.value = 5;
+    compressor.attack.value = 0.003;
+    compressor.release.value = 0.18;
+
+    boost.connect(compressor);
+    compressor.connect(ctx.destination);
+
+    _audioOutput = { context: ctx, input: boost };
+    return boost;
+}
+
+const SOUND_PRESETS = Object.freeze({
+    clearBell: Object.freeze({
+        label: 'Campana clara',
+        steps: Object.freeze([
+            Object.freeze([659, 0.24, 0.62, 0.00, 'sine']),
+            Object.freeze([784, 0.28, 0.66, 0.18, 'sine']),
+            Object.freeze([988, 0.34, 0.70, 0.40, 'triangle']),
+        ]),
+    }),
+    softDouble: Object.freeze({
+        label: 'Doble suave',
+        steps: Object.freeze([
+            Object.freeze([523, 0.24, 0.58, 0.00, 'triangle']),
+            Object.freeze([659, 0.28, 0.62, 0.34, 'triangle']),
+        ]),
+    }),
+    brightPing: Object.freeze({
+        label: 'Ping brillante',
+        steps: Object.freeze([
+            Object.freeze([880, 0.18, 0.58, 0.00, 'sine']),
+            Object.freeze([1175, 0.24, 0.64, 0.18, 'sine']),
+        ]),
+    }),
+    risingChime: Object.freeze({
+        label: 'Subida corta',
+        steps: Object.freeze([
+            Object.freeze([523, 0.18, 0.56, 0.00, 'sine']),
+            Object.freeze([659, 0.18, 0.60, 0.16, 'sine']),
+            Object.freeze([784, 0.24, 0.66, 0.32, 'triangle']),
+        ]),
+    }),
+    warmBell: Object.freeze({
+        label: 'Campana tibia',
+        steps: Object.freeze([
+            Object.freeze([392, 0.24, 0.56, 0.00, 'sine']),
+            Object.freeze([523, 0.30, 0.62, 0.20, 'sine']),
+        ]),
+    }),
+    softPulse: Object.freeze({
+        label: 'Pulso suave',
+        steps: Object.freeze([
+            Object.freeze([440, 0.16, 0.54, 0.00, 'triangle']),
+            Object.freeze([440, 0.16, 0.54, 0.24, 'triangle']),
+        ]),
+    }),
+    firmAlert: Object.freeze({
+        label: 'Alerta firme',
+        steps: Object.freeze([
+            Object.freeze([659, 0.22, 0.74, 0.00, 'triangle']),
+            Object.freeze([659, 0.22, 0.74, 0.28, 'triangle']),
+            Object.freeze([784, 0.34, 0.80, 0.58, 'triangle']),
+        ]),
+    }),
+    shortTone: Object.freeze({
+        label: 'Tono corto',
+        steps: Object.freeze([
+            Object.freeze([988, 0.18, 0.58, 0.00, 'sine']),
+        ]),
+    }),
+    loudBell: Object.freeze({
+        label: 'Campana fuerte',
+        steps: Object.freeze([
+            Object.freeze([784, 0.22, 0.78, 0.00, 'triangle']),
+            Object.freeze([988, 0.28, 0.84, 0.18, 'triangle']),
+            Object.freeze([1319, 0.36, 0.88, 0.40, 'sine']),
+        ]),
+    }),
+    urgentTriple: Object.freeze({
+        label: 'Triple urgente',
+        steps: Object.freeze([
+            Object.freeze([988, 0.18, 0.82, 0.00, 'square']),
+            Object.freeze([988, 0.18, 0.82, 0.24, 'square']),
+            Object.freeze([1175, 0.24, 0.88, 0.48, 'square']),
+        ]),
+    }),
+    digitalAlarm: Object.freeze({
+        label: 'Alarma digital',
+        steps: Object.freeze([
+            Object.freeze([1047, 0.16, 0.80, 0.00, 'square']),
+            Object.freeze([784, 0.16, 0.78, 0.20, 'square']),
+            Object.freeze([1047, 0.20, 0.84, 0.40, 'square']),
+        ]),
+    }),
+    sirenRise: Object.freeze({
+        label: 'Sirena subida',
+        steps: Object.freeze([
+            Object.freeze([440, 0.20, 0.72, 0.00, 'sawtooth']),
+            Object.freeze([659, 0.20, 0.78, 0.18, 'sawtooth']),
+            Object.freeze([880, 0.28, 0.84, 0.36, 'sawtooth']),
+        ]),
+    }),
+    rapidPulse: Object.freeze({
+        label: 'Pulso rápido',
+        steps: Object.freeze([
+            Object.freeze([698, 0.12, 0.76, 0.00, 'triangle']),
+            Object.freeze([698, 0.12, 0.76, 0.16, 'triangle']),
+            Object.freeze([698, 0.12, 0.76, 0.32, 'triangle']),
+            Object.freeze([880, 0.20, 0.82, 0.48, 'triangle']),
+        ]),
+    }),
+    bassKnock: Object.freeze({
+        label: 'Golpe grave',
+        steps: Object.freeze([
+            Object.freeze([220, 0.20, 0.84, 0.00, 'square']),
+            Object.freeze([220, 0.20, 0.84, 0.28, 'square']),
+        ]),
+    }),
+    highFlash: Object.freeze({
+        label: 'Destello agudo',
+        steps: Object.freeze([
+            Object.freeze([1319, 0.14, 0.72, 0.00, 'sine']),
+            Object.freeze([1568, 0.16, 0.80, 0.14, 'sine']),
+            Object.freeze([1760, 0.20, 0.86, 0.30, 'sine']),
+        ]),
+    }),
+    longAlarm: Object.freeze({
+        label: 'Alarma larga',
+        steps: Object.freeze([
+            Object.freeze([587, 0.28, 0.78, 0.00, 'square']),
+            Object.freeze([784, 0.28, 0.82, 0.28, 'square']),
+            Object.freeze([587, 0.34, 0.80, 0.58, 'square']),
+        ]),
+    }),
+    silent: Object.freeze({
+        label: 'Sin sonido',
+        steps: Object.freeze([]),
+    }),
+});
+
+const SOUND_EVENT_LABELS = Object.freeze({
+    arrival: 'Archivo nuevo',
+    warning: 'Aviso 10 min',
+    critical: 'Crítico 5 min',
+});
+
+const DEFAULT_SOUND_SELECTION = Object.freeze({
+    arrival: 'clearBell',
+    warning: 'softDouble',
+    critical: 'firmAlert',
+});
+
+function _loadSoundSelections() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(DRIVE_CONFIG.SOUND_SETTINGS_KEY) || '{}');
+        return Object.fromEntries(
+            Object.entries(DEFAULT_SOUND_SELECTION).map(([type, fallback]) => [
+                type,
+                SOUND_PRESETS[saved?.[type]] ? saved[type] : fallback,
+            ])
+        );
+    } catch {
+        return { ...DEFAULT_SOUND_SELECTION };
+    }
+}
+
+const _soundSelections = _loadSoundSelections();
+
+function _saveSoundSelections() {
+    try {
+        localStorage.setItem(DRIVE_CONFIG.SOUND_SETTINGS_KEY, JSON.stringify(_soundSelections));
+    } catch {}
+}
+
+function _getSoundPresetId(type) {
+    const selected = _soundSelections[type];
+    return SOUND_PRESETS[selected] ? selected : DEFAULT_SOUND_SELECTION[type];
+}
+
+function _setSoundSelection(type, presetId) {
+    if (!DEFAULT_SOUND_SELECTION[type] || !SOUND_PRESETS[presetId]) return;
+    _soundSelections[type] = presetId;
+    _saveSoundSelections();
+}
+
+function _playSoundPreset(presetId) {
+    const preset = SOUND_PRESETS[presetId];
+    if (!preset) return;
+    preset.steps.forEach(step => _beep(...step));
+}
+
+function _audioAlert(type) {
+    try {
+        _playSoundPreset(_getSoundPresetId(type));
+    } catch (e) {
+        console.warn('[DriveSync] Error reproduciendo alerta sonora:', e);
+    }
+}
+
+function _notifyTokenExpiry(minutesLeft) {
+    const isUrgent = minutesLeft <= 5;
+    const body = isUrgent
+        ? `Quedan ${minutesLeft} minutos. Intentando renovar sesión automáticamente...`
+        : `Quedan ${minutesLeft} minutos antes de que venza la sesión de Drive.`;
+
+    _setToast(`⏱ ${body}`, !isUrgent);
+    _audioAlert(isUrgent ? 'critical' : 'warning');
+
+    if (Notification.permission === 'granted') {
+        new Notification('Drive — Sesión por vencer', {
+            body,
+            icon: 'https://ssl.gstatic.com/images/branding/product/1x/drive_2020q4_48dp.png',
+        });
+    }
+}
+
+// ─── Polling ───────────────────────────────────────────────────────────────────
+
+async function _startPolling() {
+    if (_state.isPolling) return;
+    _state.isPolling = true;
+    _state.offsetDay = 0;
+    localStorage.setItem(DRIVE_CONFIG.WAS_ACTIVE_KEY, 'true');
+
+    const bc = document.getElementById('drive-sync-btn');
+    const bs = document.getElementById('drive-sync-stop');
+    if (bc) bc.style.display = 'none';
+    if (bs) bs.style.display = '';
+
+    const dayName   = document.getElementById('drive-day-name');
+    const dayStatus = document.getElementById('drive-day-status');
+    if (dayName)   dayName.textContent   = 'Carpeta: ' + _getDia();
+    if (dayStatus) dayStatus.style.display = 'flex';
+
+    _setStatus('● Monitoreando en vivo', true);
+    _applyMode();
+    _countdown.start();
+    await _scan(true);
+    _state.pollTimer = setInterval(() => _scan(false), DRIVE_CONFIG.POLL_INTERVAL);
+}
+
+function _stopPolling() {
+    clearInterval(_state.pollTimer);
+    _state.pollTimer = null;
+    _state.isPolling = false;
+    localStorage.setItem(DRIVE_CONFIG.WAS_ACTIVE_KEY, 'false');
+    _setStatus('Desconectado');
+
+    const bc = document.getElementById('drive-sync-btn');
+    const bs = document.getElementById('drive-sync-stop');
+    if (bc) { bc.style.display = ''; bc.disabled = false; }
+    if (bs) bs.style.display = 'none';
+
+    const dayStatus = document.getElementById('drive-day-status');
+    if (dayStatus) dayStatus.style.display = 'none';
+    _setFileCount(null);
+    _countdown.stop();
+    _restoreConnectBtn();
+}
+
+function _handleNewPdfFile(file) {
+    const source = _getSourceConfig(file.source);
+    _audioAlert('arrival');
+
+    if (Notification.permission === 'granted') {
+        new Notification(`Nuevo PDF ${source.label}`, {
+            body: `"${file.name}" subido a Drive`,
+            icon: 'https://ssl.gstatic.com/images/branding/product/1x/drive_2020q4_48dp.png',
+        });
+    }
+
+    _setToast(`Nuevo PDF ${source.label}: "${file.name}"`);
+}
+
+async function _scanPdfSources(firstScan) {
+    const filesBySource = await _loadAllPdfSources(0);
+    _state.carrierFiles = { ..._state.carrierFiles, ...filesBySource };
+
+    for (const sourceKey of PDF_LABEL_SOURCE_KEYS) {
+        const files = filesBySource[sourceKey] || [];
+        if (firstScan) {
+            files.forEach(file => _rememberSeenFile(file, false));
+            continue;
+        }
+
+        files.filter(file => !_hasSeenFile(file)).forEach(file => {
+            _rememberSeenFile(file);
+            _handleNewPdfFile(file);
+        });
+    }
+
+    if (firstScan) _saveSeenFiles();
+    _updateCarrierStats();
+    _renderCarrierPanel();
+}
+
+async function _scan(firstScan) {
+    if (_state._scanning) return;
+    _state._scanning = true;
+
+    try {
+        _syncSeenFilesForToday();
+        await _ensureFreshToken();
+        const dayId = await _getDayFolderId(0);
+        const files = dayId ? await _getAllTxtRecursive(dayId) : [];
+        await _scanPdfSources(firstScan);
+
+        if (firstScan) {
+            files.forEach(file => _rememberSeenFile(file, false));
+            _saveSeenFiles();
+            _state.knownFiles = files;
+            _setFileCount(files.length);
+            _setStatus(`● Monitoreando — ${files.length} existentes`, true);
+            _renderExistingPanel();
+            return;
+        }
+
+        const newFiles = files.filter(f => !_hasSeenFile(f));
+        for (const file of newFiles) {
+            _rememberSeenFile(file);
+            await _handleNewFile(file);
+        }
+        _state.knownFiles = files;
+        _setFileCount(files.length);
+
+    } catch (err) {
+        console.error('[DriveSync] _scan error:', err);
+        const code = err.status ?? err.code ?? err.result?.error?.code;
+        if (code === 401 || code === 403) {
+            try {
+                await _requestToken(true);
+                _setStatus('● Monitoreando en vivo', true);
+            } catch {
+                _state._refreshing = false;
+                _stopPolling();
+                _setStatus('⚠️ Sesión expirada — clic en Reconectar Drive');
+            }
+        } else {
+            _setStatus('⚠️ Error temporal, reintentando en 30s...');
+        }
+    } finally {
+        _state._scanning = false;
+    }
+}
+
+// ─── Token: refresh silencioso ────────────────────────────────────────────────
+
+function _loadScript(src) {
+    return new Promise((res, rej) => {
+        if (document.querySelector(`script[src="${src}"]`)) { res(); return; }
+        const s   = document.createElement('script');
+        s.src     = src;
+        s.onload  = res;
+        s.onerror = () => rej(new Error('Error cargando ' + src));
+        document.head.appendChild(s);
+    });
+}
+
+async function _loadAll() {
+    await _loadScript('https://accounts.google.com/gsi/client');
+    await _loadScript('https://apis.google.com/js/api.js');
+    if (_gapi.ready) return;                          // FIX #7
+    const apiKey = _keyStore.load();                  // FIX #8
+    await new Promise((res, rej) =>
+        gapi.load('client', {
+            callback: () => gapi.client.init({
+                apiKey:         apiKey || undefined,
+                discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
+            }).then(() => { _gapi.setReady(); res(); }).catch(rej),
+            onerror: (e) => rej(new Error('gapi.load falló: ' + (e?.message || e))),
+        })
+    );
+}
+
+function _requestToken(silent = false) {
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() =>
+            reject(new Error(silent ? 'silent_timeout' : 'Tiempo de espera agotado')),
+            silent ? 10_000 : 120_000
+        );
+        _state.tokenClient = google.accounts.oauth2.initTokenClient({
+            client_id: DRIVE_CONFIG.CLIENT_ID,
+            scope:     DRIVE_CONFIG.SCOPES,
+            callback: (r) => {
+                clearTimeout(timeout);
+                if (r.error) { reject(new Error('OAuth: ' + r.error)); return; }
+                _tokenStore.save(r);
+                gapi.client.setToken({ access_token: r.access_token });
+                resolve(r);
+            },
+            error_callback: (e) => {
+                clearTimeout(timeout);
+                reject(new Error(e.message || e.type || 'error desconocido'));
+            },
+        });
+        _state.tokenClient.requestAccessToken({ prompt: silent ? '' : 'select_account' });
+    });
+}
+
+async function _ensureFreshToken() {
+    if (_tokenStore.isValid()) return;
+    if (_state._refreshing)   return;
+    _state._refreshing = true;
+    try {
+        _setStatus('⟳ Renovando sesión...', false);
+        await _requestToken(true);
+        _countdown.reset();
+        _setStatus('● Monitoreando en vivo', true);
+    } catch {
+        if (!_tokenStore.isValid(0)) {
+            _stopPolling();
+            _setStatus('⚠️ Sesión expirada — clic en Reconectar Drive');
+            _setToast('Sesión de Drive expirada. Hacé clic en "Reconectar Drive".', false);
+        } else {
+            _setStatus('● Monitoreando en vivo', true);
+        }
+    } finally {
+        _state._refreshing = false;
+    }
+}
+
+async function _authorize(silent = false) {
+    _setStatus('⏳ Cargando SDK de Google...');
+    try { await _loadAll(); }
+    catch (e) {
+        console.error('[DriveSync] _loadAll falló:', e);
+        _setStatus('❌ Error SDK: ' + e.message);
+        _restoreConnectBtn();
+        return false;
+    }
+    _setStatus('⏳ Esperando autorización...');
+    try {
+        await _requestToken(silent);
+        return true;
+    } catch (e) {
+        if (silent) return false;
+        console.error('[DriveSync] OAuth falló:', e);
+        _setStatus('❌ ' + e.message + ' — Intentá de nuevo');
+        _restoreConnectBtn();
+        return false;
+    }
+}
+
+async function _tryRestoreSession() {
+    const wasActive = localStorage.getItem(DRIVE_CONFIG.WAS_ACTIVE_KEY) === 'true';
+    if (!wasActive || !_keyStore.exists()) return;
+
+    _setStatus('⏳ Restaurando sesión...');
+    try { await _loadAll(); } catch { _setStatus('Desconectado'); return; }
+
+    if (_tokenStore.isValid(0)) {
+        _tokenStore.applyToGapi();
+        _setStatus('● Sesión restaurada', true);
+        await _startPolling();
+        return;
+    }
+
+    const ok = await _authorize(true);
+    if (ok) {
+        await _startPolling();
+    } else {
+        _setStatus('Desconectado — clic en Conectar Drive');
+        _restoreConnectBtn();
+    }
+}
+
+// ─── Procesamiento de archivos ─────────────────────────────────────────────────
+
+async function _handleNewFile(file) {
+    let text = '';
+    try { text = await _downloadText(file.id); }
+    catch { _setToast(`Error descargando: ${file.name}`, false); return; }
+
+    const bulkCount = _countBulks(text);
+    _audioAlert('arrival');
+
+    if (Notification.permission === 'granted') {
+        new Notification('Nuevo archivo en Drive', {
+            body: `"${file.name}" — ${bulkCount} bultos`,
+            icon: 'https://ssl.gstatic.com/images/branding/product/1x/drive_2020q4_48dp.png',
+        });
+    }
+
+    if (_state.mode === 'auto') {
+        await _processFile({ name: file.name, text, bulkCount, folder: file.folder || 'Drive', picker: DRIVE_CONFIG.DEFAULT_PICKER, uploadedAt: file.createdTime || null });
+    } else {
+        _state.pending.push({ id: file.id, name: file.name, folder: file.folder || 'Drive', detectedAt: new Date(), uploadedAt: file.createdTime || null, bulkCount, text });
+        _setToast(`Pendiente: "${file.name}"`);
+        _renderPending();
+    }
+}
+
+async function _processFile({ name, text, bulkCount, folder, picker, uploadedAt = null }) {
+    const pickerInput = document.getElementById('picker');
+    if (pickerInput) {
+        const target = Array.from(pickerInput.options)
+            .find(o => o.value.toLowerCase() === picker.toLowerCase())
+            || Array.from(pickerInput.options).find(o => o.value.toLowerCase().includes(picker.toLowerCase()));
+        if (target) {
+            pickerInput.value = target.value;
+            pickerInput.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    }
+
+    const f = new File([new Blob([text], { type: 'text/plain' })], name, { type: 'text/plain' });
+    let realCount = bulkCount;
+
+    if (window.App?.actions?.handleFiles) {
+        const prevLen = window.App.state?.storedDocuments?.length ?? -1;
+        await window.App.actions.handleFiles([f]);
+        const docs = window.App.state?.storedDocuments;
+        if (Array.isArray(docs) && docs.length > prevLen && docs[0]?.rows?.length > 0)
+            realCount = docs[0].rows.length;
+    } else {
+        console.warn('[DriveSync] window.App no disponible.');
+    }
+
+    _state.processed.push({ name, folder, picker, bulkCount: realCount, processedAt: new Date(), uploadedAt });
+    _saveProcessedList();
+    _renderProcessed();
+    _setToast(`✓ "${name}" — ${realCount} pedidos → ${picker}`);
+    _highlightNewestHistorialItem();
+}
+
+const _DRIVE_BADGE_SVG =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="10" viewBox="0 0 87.3 78">'
+    + '<path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>'
+    + '<path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0-1.2 4.5h27.5z" fill="#00ac47"/>'
+    + '<path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/>'
+    + '<path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>'
+    + '<path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>'
+    + '<path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 27h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>'
+    + '</svg>';
+
+function _highlightNewestHistorialItem() {
+    setTimeout(() => {
+        const items = document.querySelectorAll('#historyList [data-history-document-id]');
+        if (!items.length) return;
+        const newest = items[0];
+        newest.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        const prev = newest.style.background;
+        newest.style.transition = 'background 0.4s';
+        newest.style.background = '#e8f5e9';
+        setTimeout(() => { newest.style.transition = 'background 1s'; newest.style.background = prev || ''; }, 1800);
+        if (!newest.querySelector('.drive-badge')) {
+            const badge = document.createElement('span');
+            badge.className   = 'drive-badge';
+            badge.title       = 'Procesado desde Google Drive';
+            badge.style.cssText = 'display:inline-flex;align-items:center;margin-left:5px;vertical-align:middle;opacity:0.8;';
+            badge.innerHTML   = _DRIVE_BADGE_SVG;
+            (newest.querySelector('strong,[class*="name"],[class*="source"]') || newest.firstElementChild || newest).appendChild(badge);
+        }
+    }, 700);
+}
+
+// ─── Utilidades ────────────────────────────────────────────────────────────────
+
+function _getPickerOptions() {
+    const sel = document.getElementById('picker');
+    return sel
+        ? Array.from(sel.options).filter(o => o.value).map(o => ({ v: o.value, l: o.text }))
+        : [{ v: DRIVE_CONFIG.DEFAULT_PICKER, l: DRIVE_CONFIG.DEFAULT_PICKER }];
+}
+
+// ─── Auto-inyección de estilos ────────────────────────────────────────────────
+// El JS inyecta su propio <style> en el <head> al inicializar.
+// No requiere un archivo CSS separado ni un <link> adicional en index.html.
+
+function _injectStyles() {
+    if (document.getElementById('drive-sync-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'drive-sync-styles';
+    style.textContent = `
+/* drive-sync.css — inyectado por drive-sync.js */
+
+.ds-hidden { display: none !important; }
+
+#drive-sync-status.drive-sync-status--active { color: #00ac47; font-weight: 600; }
+
+#drive-sync-toast.drive-sync-toast--error {
+  border-left-color: #ea4335 !important;
+  background: rgba(234,67,53,0.05);
+}
+
+/* Modo Auto / Manual */
+#drive-mode-auto,
+#drive-mode-manual { background: transparent; color: var(--text-muted, #888); }
+#drive-mode-auto.is-active  { background: #00ac47; color: #fff; }
+#drive-mode-manual.is-active { background: #1a73e8; color: #fff; }
+
+/* API Key inline */
+.ds-apikey-row { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
+.ds-apikey-input {
+  flex: 1; padding: 6px 9px;
+  border: 1px solid var(--border, #e0e0e0); border-radius: 6px;
+  font-size: 12px; background: var(--surface, #fff); color: var(--text, #222);
+  outline: none; transition: border-color 0.15s;
+}
+.ds-apikey-input:focus { border-color: #1a73e8; }
+.ds-apikey-input.ds-apikey-input--error { border-color: #ea4335; }
+
+/* Botones comunes */
+.ds-btn {
+  padding: 5px 12px; border: none; border-radius: 6px;
+  font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: opacity 0.15s, background 0.15s; white-space: nowrap;
+}
+.ds-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.ds-btn--process { background: #00ac47; color: #fff; }
+.ds-btn--process:hover:not(:disabled) { background: #009940; }
+.ds-btn--dismiss { background: transparent; color: var(--text-muted,#888); border: 1px solid var(--border,#e0e0e0); }
+.ds-btn--dismiss:hover { background: var(--surface-soft, #f5f5f5); }
+.ds-btn--save { background: #1a73e8; color: #fff; }
+.ds-btn--save:hover { background: #1557b0; }
+
+/* Tags */
+.ds-tag { display: inline-block; border-radius: 4px; padding: 2px 7px; font-size: 11px; font-weight: 500; }
+.ds-tag--folder { background: #e8f5e9; color: #2e7d32; }
+.ds-tag--bulk   { background: #e3f2fd; color: #1565c0; }
+
+/* Pendientes */
+.ds-pending-row {
+  background: var(--surface,#fff); border: 1px solid var(--border,#e0e0e0);
+  border-radius: 8px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 6px; font-size: 12px;
+}
+.ds-pending-header { display: flex; justify-content: space-between; align-items: center; }
+.ds-pending-name {
+  font-weight: 600; color: var(--text,#222);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 155px;
+}
+.ds-pending-time { color: var(--text-muted,#888); font-size: 11px; flex-shrink: 0; }
+.ds-pending-tags { display: flex; gap: 4px; }
+.ds-pending-actions { display: flex; gap: 6px; align-items: center; }
+.ds-pending-select {
+  flex: 1; padding: 5px 8px; border: 1px solid var(--border,#e0e0e0);
+  border-radius: 6px; font-size: 12px;
+  background: var(--surface,#fff); color: var(--text,#222);
+}
+
+/* Procesados */
+.ds-proc-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 10px; background: var(--surface,#fff);
+  border: 1px solid var(--border,#e0e0e0); border-radius: 6px; font-size: 11px;
+}
+.ds-proc-name {
+  color: var(--text,#222); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; max-width: 130px;
+}
+.ds-proc-meta { display: flex; gap: 5px; align-items: center; flex-shrink: 0; }
+.ds-proc-picker { color: var(--text-muted,#888); }
+.ds-proc-time   { color: var(--text-muted,#888); }
+
+/* Panel archivos existentes */
+.ds-ep-panel {
+  display: none; margin-top: 10px;
+  border: 1px solid rgba(15,23,42,0.10); border-radius: 10px;
+  overflow: hidden; background: rgba(255,255,255,0.96);
+}
+.ds-ep-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; background: rgba(0,172,71,0.06);
+  border-bottom: 1px solid rgba(15,23,42,0.08);
+}
+.ds-ep-nav { display: flex; align-items: center; gap: 6px; }
+.ds-ep-btn-nav {
+  background: transparent; border: 1px solid rgba(15,23,42,0.12);
+  border-radius: 4px; cursor: pointer; font-size: 13px;
+  padding: 1px 6px; color: #0F6E56; line-height: 1.4; transition: background 0.15s;
+}
+.ds-ep-btn-nav:hover { background: rgba(15,110,86,0.08); }
+.ds-ep-title {
+  font-size: 11px; font-weight: 700; color: #0F6E56;
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+.ds-ep-close {
+  background: transparent; border: none; cursor: pointer;
+  color: #5C6F63; font-size: 16px; line-height: 1; padding: 0 2px; transition: color 0.15s;
+}
+.ds-ep-close:hover { color: #17301F; }
+.ds-ep-body { max-height: 260px; overflow-y: auto; }
+.ds-ep-file-row {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 9px 12px; border-bottom: 1px solid rgba(15,23,42,0.06);
+}
+.ds-ep-file-row--done { background: rgba(0,172,71,0.04); }
+.ds-ep-file-top { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.ds-ep-file-name {
+  font-size: 12px; font-weight: 600; color: #17301F;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px;
+}
+.ds-ep-file-meta {
+  display: flex; flex-direction: column; align-items: flex-end;
+  gap: 2px; flex-shrink: 0;
+}
+.ds-ep-file-date  { font-size: 10px; color: #5C6F63; font-weight: 600; }
+.ds-ep-file-time  { font-size: 10px; color: #1a73e8; font-weight: 500; }
+.ds-ep-file-folder { font-size: 10px; color: #5C6F63; }
+.ds-ep-file-actions { display: flex; gap: 5px; align-items: center; }
+.ds-ep-select {
+  flex: 1; padding: 4px 7px; border: 1px solid rgba(15,23,42,0.12);
+  border-radius: 6px; font-size: 11px; background: #fff; color: #17301F;
+}
+.ds-ep-btn-process { padding: 4px 11px !important; font-size: 11px !important; }
+.ds-ep-done-badge {
+  flex: 1; padding: 4px 10px; background: #e8f5e9; color: #2e7d32;
+  border-radius: 6px; font-size: 11px; font-weight: 600; text-align: center;
+}
+.ds-ep-empty, .ds-ep-loading {
+  padding: 14px; text-align: center; color: #5C6F63; font-size: 12px;
+}
+
+/* Reloj de expiración del token */
+.ds-token-clock {
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: #00ac47;
+  background: rgba(0,172,71,0.10);
+  border-radius: 8px;
+  padding: 2px 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+  transition: color 0.4s, background 0.4s;
+  cursor: default;
+}
+.ds-token-clock--warning {
+  color: #e65100;
+  background: rgba(230,81,0,0.10);
+}
+.ds-token-clock--critical {
+  color: #c62828;
+  background: rgba(198,40,40,0.12);
+  animation: ds-pulse 1s ease-in-out infinite;
+}
+@keyframes ds-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.5; }
+}
+
+body.carrier-print-lock {
+  overflow: hidden !important;
+}
+
+.carrier-print-modal[hidden] {
+  display: none !important;
+}
+
+.carrier-print-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+
+.carrier-print-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(14, 28, 23, 0.58);
+  backdrop-filter: blur(3px);
+}
+
+.carrier-print-dialog {
+  position: relative;
+  width: min(1180px, calc(100vw - 36px));
+  height: min(780px, calc(100vh - 36px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  border: 1px solid rgba(15,23,42,0.12);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 22px 70px rgba(11, 25, 19, 0.28);
+  overflow: hidden;
+}
+
+.carrier-print-head,
+.carrier-print-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 18px;
+  background: #fff;
+  border-bottom: 1px solid rgba(15,23,42,0.08);
+}
+
+.carrier-print-actions {
+  justify-content: flex-end;
+  border-top: 1px solid rgba(15,23,42,0.08);
+  border-bottom: 0;
+}
+
+.carrier-print-kicker {
+  display: block;
+  margin-bottom: 3px;
+  color: #00a650;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.carrier-print-head h2 {
+  margin: 0;
+  color: #17352f;
+  font-size: 18px;
+  line-height: 1.15;
+}
+
+.carrier-print-head p {
+  margin: 4px 0 0;
+  color: #65766f;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.carrier-print-close {
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(15,23,42,0.10);
+  border-radius: 8px;
+  background: #f8fbfa;
+  color: #17352f;
+  font-size: 16px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.carrier-print-body {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 292px minmax(0, 1fr);
+  background: #f3f7f5;
+}
+
+.carrier-print-side {
+  min-height: 0;
+  padding: 14px;
+  border-right: 1px solid rgba(15,23,42,0.08);
+  background: #fff;
+  overflow: auto;
+}
+
+.carrier-print-side label {
+  display: block;
+  margin-bottom: 7px;
+  color: #52665f;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.carrier-print-side select {
+  width: 100%;
+  height: 36px;
+  border: 1px solid #d9e4df;
+  border-radius: 8px;
+  background: #fff;
+  color: #17352f;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 0 10px;
+}
+
+.carrier-print-file-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.carrier-print-file {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #e4ece8;
+  border-radius: 8px;
+  background: #fbfdfc;
+  color: #17352f;
+  text-align: left;
+  cursor: pointer;
+}
+
+.carrier-print-file.is-active {
+  border-color: #00a650;
+  background: #edf9f2;
+}
+
+.carrier-print-file.is-printed {
+  border-color: rgba(0,166,80,0.26);
+  background: #f2fbf6;
+}
+
+.carrier-print-file strong,
+.carrier-print-file span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.carrier-print-file strong {
+  font-size: 12px;
+}
+
+.carrier-print-file span {
+  margin-top: 4px;
+  color: #65766f;
+  font-size: 11px;
+}
+
+.carrier-print-file .carrier-print-file-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  max-width: 100%;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.carrier-print-file-status.is-printed {
+  background: #ddf6e8;
+  color: #008a3b;
+}
+
+.carrier-print-file-status.is-pending {
+  background: #fff4d7;
+  color: #8a5a00;
+}
+
+.carrier-print-viewer {
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+}
+
+.carrier-print-viewer iframe {
+  width: 100%;
+  height: 100%;
+  border: 1px solid rgba(15,23,42,0.08);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.carrier-print-primary,
+.carrier-print-secondary {
+  height: 38px;
+  min-width: 128px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.carrier-print-primary {
+  border: 1px solid #00a650;
+  background: #00a650;
+  color: #fff;
+}
+
+.carrier-print-primary.is-reprint {
+  border-color: #0f6e56;
+  background: #0f6e56;
+}
+
+.carrier-print-secondary {
+  border: 1px solid #dbe5e0;
+  background: #f8fbfa;
+  color: #17352f;
+}
+
+.carrier-print-primary:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+}
+
+.carrier-print-empty {
+  padding: 12px;
+  border: 1px solid #e4ece8;
+  border-radius: 8px;
+  background: #fbfdfc;
+  color: #65766f;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.carrier-print-empty.is-error {
+  border-color: rgba(220, 38, 38, 0.22);
+  background: rgba(220, 38, 38, 0.05);
+  color: #9f1239;
+}
+
+body.is-dark-mode .carrier-print-dialog,
+body.is-dark-mode .carrier-print-head,
+body.is-dark-mode .carrier-print-actions,
+body.is-dark-mode .carrier-print-side {
+  background: #102039;
+  border-color: rgba(148,163,184,0.18);
+}
+
+body.is-dark-mode .carrier-print-body {
+  background: #0b1628;
+}
+
+body.is-dark-mode .carrier-print-head h2,
+body.is-dark-mode .carrier-print-file strong,
+body.is-dark-mode .carrier-print-close,
+body.is-dark-mode .carrier-print-secondary,
+body.is-dark-mode .carrier-print-side select {
+  color: #eef6ff;
+}
+
+body.is-dark-mode .carrier-print-head p,
+body.is-dark-mode .carrier-print-file span,
+body.is-dark-mode .carrier-print-side label {
+  color: #aabbd0;
+}
+
+body.is-dark-mode .carrier-print-side select,
+body.is-dark-mode .carrier-print-file,
+body.is-dark-mode .carrier-print-close,
+body.is-dark-mode .carrier-print-secondary {
+  background: #0a1220;
+  border-color: rgba(148,163,184,0.24);
+}
+
+body.is-dark-mode .carrier-print-file.is-active {
+  border-color: #15c978;
+  background: rgba(21,201,120,0.12);
+}
+
+body.is-dark-mode .carrier-print-file-status.is-printed {
+  background: rgba(22,163,74,0.22);
+  color: #86efac;
+}
+
+body.is-dark-mode .carrier-print-file-status.is-pending {
+  background: rgba(245,158,11,0.18);
+  color: #fcd34d;
+}
+
+@media (max-width: 820px) {
+  .carrier-print-dialog {
+    height: calc(100vh - 24px);
+    width: calc(100vw - 24px);
+  }
+  .carrier-print-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .carrier-print-side {
+    max-height: 190px;
+    border-right: 0;
+    border-bottom: 1px solid rgba(15,23,42,0.08);
+  }
+}
+`;
+    document.head.appendChild(style);
+}
+
+// ─── Botón de prueba de sonidos ────────────────────────────────────────────────
+
+function _injectSoundTestButton() {
+    const panel = document.getElementById('drive-sync-panel');
+    if (!panel) return;
+
+    let btn = document.getElementById('drive-sound-test-btn');
+    let label = document.getElementById('drive-sound-test-label');
+    if (!btn || !label) {
+        const wrap = document.createElement('div');
+        wrap.className = 'lp-drive-sound-row';
+
+        btn = document.createElement('button');
+        btn.id = 'drive-sound-test-btn';
+        btn.type = 'button';
+        btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24"
+            fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+            aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>Probar sonidos`;
+
+        label = document.createElement('span');
+        label.id = 'drive-sound-test-label';
+
+        wrap.append(btn, label);
+        panel.appendChild(wrap);
+    }
+
+    if (btn.dataset.bound === '1') return;
+    btn.dataset.bound = '1';
+
+    btn.addEventListener('click', event => {
+        event.preventDefault();
+    });
+}
+
+function _toggleSoundMenu(force) {
+    const trigger = document.getElementById('drive-sound-menu-btn');
+    const popover = document.getElementById('drive-sound-popover');
+    if (!trigger || !popover) return;
+
+    const shouldOpen = typeof force === 'boolean' ? force : popover.hidden;
+    popover.hidden = !shouldOpen;
+    trigger.setAttribute('aria-expanded', String(shouldOpen));
+}
+
+function _initSoundMenu() {
+    const trigger = document.getElementById('drive-sound-menu-btn');
+    const popover = document.getElementById('drive-sound-popover');
+    if (!trigger || !popover || trigger.dataset.bound === '1') return;
+
+    trigger.dataset.bound = '1';
+    document.addEventListener('click', event => {
+        if (popover.hidden) return;
+        if (popover.contains(event.target) || trigger.contains(event.target)) return;
+        _toggleSoundMenu(false);
+    });
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') _toggleSoundMenu(false);
+    });
+}
+
+function _initSoundSettings() {
+    Object.keys(DEFAULT_SOUND_SELECTION).forEach(type => {
+        const select = document.getElementById(`drive-sound-${type}`);
+        if (!select) return;
+
+        if (!select.options.length) {
+            select.innerHTML = Object.entries(SOUND_PRESETS)
+                .map(([value, preset]) => `<option value="${value}">${preset.label}</option>`)
+                .join('');
+        }
+        select.value = _getSoundPresetId(type);
+
+        if (select.dataset.bound === '1') return;
+        select.dataset.bound = '1';
+        select.addEventListener('change', () => _setSoundSelection(type, select.value));
+    });
+}
+
+async function _runSoundTest() {
+    const btn = document.getElementById('drive-sound-test-btn');
+    const label = document.getElementById('drive-sound-test-label');
+    if (!btn || !label || btn.dataset.playing) return;
+
+    btn.dataset.playing = '1';
+    btn.style.color = 'var(--text,#555)';
+    label.textContent = 'activando audio...';
+
+    await _ensureAudioReady();
+
+    const sounds = [
+        { type: 'arrival',  delay: 0,    text: 'archivo nuevo' },
+        { type: 'warning',  delay: 1200, text: 'aviso 10 min'  },
+        { type: 'critical', delay: 2500, text: 'crítico 5 min' },
+    ];
+
+    sounds.forEach(({ type, delay, text }) => {
+        setTimeout(() => {
+            label.textContent = text;
+            _audioAlert(type);
+        }, delay);
+    });
+
+    setTimeout(() => {
+        delete btn.dataset.playing;
+        btn.style.color = '';
+        label.textContent = '';
+    }, 3800);
+}
+
+async function _previewConfiguredSound(type) {
+    if (!DEFAULT_SOUND_SELECTION[type]) return;
+
+    const label = document.getElementById('drive-sound-test-label');
+    const preset = SOUND_PRESETS[_getSoundPresetId(type)];
+
+    await _ensureAudioReady();
+    if (label) label.textContent = `${SOUND_EVENT_LABELS[type]} · ${preset.label}`;
+    _audioAlert(type);
+
+    setTimeout(() => {
+        if (label?.textContent === `${SOUND_EVENT_LABELS[type]} · ${preset.label}`) {
+            label.textContent = '';
+        }
+    }, 1400);
+}
+
+// ─── API Pública ───────────────────────────────────────────────────────────────
+
+const DriveSync = {
+
+    testSounds: _runSoundTest,
+    previewSound: _previewConfiguredSound,
+    toggleSoundMenu: _toggleSoundMenu,
+    showLabelSource: _setActiveLabelSource,
+    refreshCarrierLabels: _refreshCarrierLabels,
+    printCarrierLabels: _printCarrierLabels,
+
+    setMode(mode) {
+        _state.mode = mode;
+        localStorage.setItem(DRIVE_CONFIG.MODE_KEY, mode);
+        _applyMode();
+    },
+
+    async processItem(id, pickerOverride) {
+        const idx = _state.pending.findIndex(p => p.id === id);
+        if (idx === -1) return;
+        const item = _state.pending[idx];
+        await _processFile({ name: item.name, text: item.text, bulkCount: item.bulkCount, folder: item.folder, picker: pickerOverride || DRIVE_CONFIG.DEFAULT_PICKER, uploadedAt: item.uploadedAt || null });
+        _state.pending.splice(idx, 1);
+        _renderPending();
+    },
+
+    dismissItem(id) {
+        _state.pending = _state.pending.filter(p => p.id !== id);
+        _renderPending();
+    },
+
+    async connect() {
+        if (_state.isPolling) return;
+        const btn = document.getElementById('drive-sync-btn');
+        if (btn) { btn.disabled = true; btn.textContent = '⏳ Conectando...'; }
+
+        if (!_keyStore.exists()) {          // FIX #1
+            _showApiKeyInput();
+            _restoreConnectBtn();
+            return;
+        }
+        _removeApiKeyInput();
+
+        const ok = await _authorize(false);
+        if (ok) await _startPolling();
+    },
+
+    stop: _stopPolling,
+
+    togglePanel() {
+        _state.panelOpen = !_state.panelOpen;
+        if (_state.panelOpen) _state.offsetDay = 0;
+        _renderExistingPanel();
+    },
+
+    async changeDay(delta) {
+        _state.offsetDay += delta;
+        _state.knownFiles = [];
+        _setFileCount(null);
+        const body = document.getElementById('drive-ep-body');
+        if (body) body.innerHTML = `<div class="ds-ep-loading">Cargando...</div>`;
+        try {
+            const dayId = await _getDayFolderId(_state.offsetDay);
+            if (dayId) {
+                const files = await _getAllTxtRecursive(dayId);
+                _state.knownFiles = files;
+                _setFileCount(files.length);
+            } else {
+                _setFileCount(0);
+            }
+            _state.carrierFiles = { ..._state.carrierFiles, ...(await _loadAllPdfSources(_state.offsetDay)) };
+            _updateCarrierStats();
+        } catch (e) { console.error('[DriveSync] changeDay:', e); }
+        _renderExistingPanel();
+        _renderCarrierPanel();
+    },
+
+    async processExisting(fileId, pickerOverride) {
+        const file = _state.knownFiles.find(f => f.id === fileId);
+        if (!file) return;
+        try {
+            const text      = await _downloadText(fileId);
+            const bulkCount = _countBulks(text);
+            await _processFile({ name: file.name, text, bulkCount, folder: file.folder || 'Drive', picker: pickerOverride || DRIVE_CONFIG.DEFAULT_PICKER, uploadedAt: file.createdTime || null });
+            _state.processedIds.add(fileId);
+            _saveProcessedIds();
+            _renderExistingPanel();
+        } catch {
+            _setToast('Error al procesar: ' + file.name, false);
+            _renderExistingPanel();
+        }
+    },
+
+    init() {
+        _injectStyles();
+        const attach = () => {
+            if (!document.getElementById('drive-sync-btn')) { setTimeout(attach, 100); return; }
+            _restoreConnectBtn();
+            if (Notification.permission === 'default') Notification.requestPermission();
+            _applyMode();
+            _initPendingListeners();
+            _injectSoundTestButton();
+            _initSoundMenu();
+            _initSoundSettings();
+            _initCarrierLabelsUi();
+            if (_state.processed.length > 0) _renderProcessed();
+            _tryRestoreSession();
+        };
+        document.readyState === 'loading'
+            ? document.addEventListener('DOMContentLoaded', attach)
+            : attach();
+    },
+};
+
+DriveSync.init();
