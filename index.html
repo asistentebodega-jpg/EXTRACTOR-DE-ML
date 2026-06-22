@@ -5322,6 +5322,22 @@ body.is-dark-mode .btn-carrier-walmart {
                                 <span class="stat-status-chip is-cancelled"><strong id="countColectaCancelled">0</strong><span>Cancel.</span></span>
                             </span>
                         </button>
+                        <button class="stat-item stat-item--total stat-item--total-split" id="totalStatBtn" type="button" data-row-type-filter="all" aria-pressed="true" title="Mostrar todos los pedidos">
+                            <span class="stat-icon stat-icon--asset" aria-hidden="true">
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" focusable="false">
+                                    <g fill="none" stroke="#0F8F51" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M50 17 78 31 50 45 22 31 50 17Z"></path>
+                                        <path d="M22 48 50 62 78 48"></path>
+                                        <path d="M22 64 50 78 78 64"></path>
+                                    </g>
+                                </svg>
+                            </span>
+                            <span class="stat-copy"><span class="stat-value" id="countTotal">0</span><span class="stat-label">Total Extraido</span><small>Ver detalle</small></span>
+                            <span class="stat-status-split stat-total-breakdown" aria-label="Total completo de etiquetas Flex y Colecta">
+                                <span class="stat-status-chip"><strong id="countTotalFlex">0</strong><span>Flex</span></span>
+                                <span class="stat-status-chip"><strong id="countTotalColecta">0</strong><span>Colecta</span></span>
+                            </span>
+                        </button>
                         <button class="stat-item stat-item--carrier stat-item--bluexpress" id="bluexpressStatBtn" type="button" data-label-source="bluexpress" aria-pressed="false" title="Ver etiquetas PDF Bluexpress">
                             <span class="stat-icon stat-icon--asset" aria-hidden="true">
                                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" focusable="false">
@@ -5347,22 +5363,6 @@ body.is-dark-mode .btn-carrier-walmart {
                                 </svg>
                             </span>
                             <span class="stat-copy"><span class="stat-value" id="countWalmart">0</span><span class="stat-label">Walmart</span><small>Ver detalle</small></span>
-                        </button>
-                        <button class="stat-item stat-item--total stat-item--total-split" id="totalStatBtn" type="button" data-row-type-filter="all" aria-pressed="true" title="Mostrar todos los pedidos">
-                            <span class="stat-icon stat-icon--asset" aria-hidden="true">
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" focusable="false">
-                                    <g fill="none" stroke="#0F8F51" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
-                                        <path d="M50 17 78 31 50 45 22 31 50 17Z"></path>
-                                        <path d="M22 48 50 62 78 48"></path>
-                                        <path d="M22 64 50 78 78 64"></path>
-                                    </g>
-                                </svg>
-                            </span>
-                            <span class="stat-copy"><span class="stat-value" id="countTotal">0</span><span class="stat-label">Total Extraido</span><small>Ver detalle</small></span>
-                            <span class="stat-status-split stat-total-breakdown" aria-label="Total completo de etiquetas Flex y Colecta">
-                                <span class="stat-status-chip"><strong id="countTotalFlex">0</strong><span>Flex</span></span>
-                                <span class="stat-status-chip"><strong id="countTotalColecta">0</strong><span>Colecta</span></span>
-                            </span>
                         </button>
                     </div>
 
