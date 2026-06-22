@@ -1,7 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Total">
-  <g fill="none" stroke="#0F8F51" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M50 17 78 31 50 45 22 31 50 17Z"/>
-    <path d="M22 48 50 62 78 48"/>
-    <path d="M22 64 50 78 78 64"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Colecta">
+  <g fill="none" stroke="#0EA5C6" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M50 17 80 33 50 49 20 33 50 17Z"/>
+    <path d="M20 33v34l30 16 30-16V33"/>
+    <path d="M50 49v34"/>
+    <path d="M34 25 64 41"/>
   </g>
 </svg>
