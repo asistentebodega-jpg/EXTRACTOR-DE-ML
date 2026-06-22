@@ -11041,6 +11041,7 @@ const DRIVE_CONFIG = Object.freeze({
     CARRIER_PRINTED_KEY:  'drive_carrier_printed_labels_v1',
     TOKEN_REFRESH_MARGIN: 5 * 60 * 1000,
     ALERT_ICON:           'https://ssl.gstatic.com/images/branding/product/1x/drive_2020q4_48dp.png',
+    RECENT_FIRST_SCAN_ALERT_MS: 45 * 60 * 1000,
     ARRIVAL_REPEAT_DELAYS: Object.freeze([6_000, 15_000]),
     PENDING_REMINDER_DELAYS: Object.freeze([30_000, 90_000, 180_000]),
 });
@@ -11489,6 +11490,21 @@ function _announceDriveArrival({ title, message, fileId, pendingOnly = false }) 
     _showAppAlert(title, message, 'warning', 9000);
     _pulseAlertTargets();
     _scheduleArrivalReminders({ fileId, title, message, pendingOnly });
+}
+
+function _announceDriveProcessed({ name, bulkCount, picker, fileId, autoOutput = false }) {
+    const message = `"${name}" procesado: ${bulkCount} pedido${bulkCount !== 1 ? 's' : ''} para ${picker}${autoOutput ? '. Descarga e impresion automatica ejecutadas.' : '.'}`;
+    _audioAlert('arrival');
+    _setToast(message, true, 12000, true);
+    _notifyNative('Etiqueta procesada', message, `drive-processed-${fileId || Date.now()}`);
+    _showAppAlert('Etiqueta procesada', message, 'warning', 12000);
+    _pulseAlertTargets();
+    _scheduleArrivalReminders({
+        fileId: `processed-${fileId || Date.now()}`,
+        title: 'Etiqueta procesada',
+        message,
+        pendingOnly: false,
+    });
 }
 
 function _restoreConnectBtn() {
@@ -12353,13 +12369,24 @@ function _syncSeenFilesForToday() {
 }
 
 function _hasSeenFile(file) {
-    return _state.knownIds.has(file.id) || _state.knownNames.has(_nameKey(file));
+    if (file?.id) {
+        return _state.knownIds.has(file.id);
+    }
+
+    return _state.knownNames.has(_nameKey(file));
 }
 
 function _rememberSeenFile(file, persist = true) {
-    _state.knownIds.add(file.id);
+    if (file?.id) {
+        _state.knownIds.add(file.id);
+    }
     _state.knownNames.add(_nameKey(file));
     if (persist) _saveSeenFiles();
+}
+
+function _isRecentDriveFile(file, maxAgeMs = DRIVE_CONFIG.RECENT_FIRST_SCAN_ALERT_MS) {
+    const createdTime = Date.parse(file?.createdTime || '');
+    return Number.isFinite(createdTime) && Date.now() - createdTime <= maxAgeMs;
 }
 
 // ─── Matching flexible de carpetas ────────────────────────────────────────────
@@ -13022,7 +13049,18 @@ async function _scan(firstScan) {
         await _scanPdfSources(firstScan);
 
         if (firstScan) {
-            files.forEach(file => _rememberSeenFile(file, false));
+            const recentNewFiles = files.filter(file => !_hasSeenFile(file) && _isRecentDriveFile(file));
+            const recentNewIds = new Set(recentNewFiles.map(file => file.id).filter(Boolean));
+
+            files
+                .filter(file => !recentNewIds.has(file.id))
+                .forEach(file => _rememberSeenFile(file, false));
+
+            for (const file of recentNewFiles) {
+                _rememberSeenFile(file, false);
+                await _handleNewFile(file);
+            }
+
             _saveSeenFiles();
             _state.knownFiles = files;
             _setFileCount(files.length);
@@ -13197,7 +13235,7 @@ async function _handleNewFile(file) {
             fileId: file.id,
             pendingOnly: false,
         });
-        await _processFile({ name: file.name, text, bulkCount, folder: file.folder || 'Drive', picker: DRIVE_CONFIG.DEFAULT_PICKER, uploadedAt: file.createdTime || null, autoOutput: true });
+        await _processFile({ fileId: file.id, name: file.name, text, bulkCount, folder: file.folder || 'Drive', picker: DRIVE_CONFIG.DEFAULT_PICKER, uploadedAt: file.createdTime || null, autoOutput: true });
     } else {
         _state.pending.push({ id: file.id, name: file.name, folder: file.folder || 'Drive', detectedAt: new Date(), uploadedAt: file.createdTime || null, bulkCount, text });
         _announceDriveArrival({
@@ -13210,7 +13248,7 @@ async function _handleNewFile(file) {
     }
 }
 
-async function _processFile({ name, text, bulkCount, folder, picker, uploadedAt = null, autoOutput = false }) {
+async function _processFile({ fileId = null, name, text, bulkCount, folder, picker, uploadedAt = null, autoOutput = false }) {
     const pickerInput = document.getElementById('picker');
     if (pickerInput) {
         const target = Array.from(pickerInput.options)
@@ -13246,10 +13284,17 @@ async function _processFile({ name, text, bulkCount, folder, picker, uploadedAt 
         console.warn('[DriveSync] window.App no disponible.');
     }
 
-    _state.processed.push({ name, folder, picker, bulkCount: realCount, processedAt: new Date(), uploadedAt });
+    if (fileId) {
+        _state.processedIds.add(fileId);
+        _saveProcessedIds();
+    }
+
+    _state.processed.push({ id: fileId, name, folder, picker, bulkCount: realCount, processedAt: new Date(), uploadedAt });
     _saveProcessedList();
     _renderProcessed();
     _setToast(`✓ "${name}" — ${realCount} pedidos → ${picker}`);
+    _announceDriveProcessed({ name, bulkCount: realCount, picker, fileId, autoOutput });
+    _renderExistingPanel();
     _highlightNewestHistorialItem();
 }
 
@@ -14094,7 +14139,7 @@ const DriveSync = {
         const idx = _state.pending.findIndex(p => p.id === id);
         if (idx === -1) return;
         const item = _state.pending[idx];
-        await _processFile({ name: item.name, text: item.text, bulkCount: item.bulkCount, folder: item.folder, picker: pickerOverride || DRIVE_CONFIG.DEFAULT_PICKER, uploadedAt: item.uploadedAt || null });
+        await _processFile({ fileId: item.id, name: item.name, text: item.text, bulkCount: item.bulkCount, folder: item.folder, picker: pickerOverride || DRIVE_CONFIG.DEFAULT_PICKER, uploadedAt: item.uploadedAt || null });
         _state.pending.splice(idx, 1);
         _clearArrivalReminders(id);
         _renderPending();
@@ -14158,9 +14203,7 @@ const DriveSync = {
         try {
             const text      = await _downloadText(fileId);
             const bulkCount = _countBulks(text);
-            await _processFile({ name: file.name, text, bulkCount, folder: file.folder || 'Drive', picker: pickerOverride || DRIVE_CONFIG.DEFAULT_PICKER, uploadedAt: file.createdTime || null });
-            _state.processedIds.add(fileId);
-            _saveProcessedIds();
+            await _processFile({ fileId, name: file.name, text, bulkCount, folder: file.folder || 'Drive', picker: pickerOverride || DRIVE_CONFIG.DEFAULT_PICKER, uploadedAt: file.createdTime || null });
             _renderExistingPanel();
         } catch {
             _setToast('Error al procesar: ' + file.name, false);
